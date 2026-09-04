@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { Camera, ArrowUpRight } from 'lucide-react';
 
 const navLinks = [
   { href: '/', label: 'Dashboard' },
@@ -87,9 +88,11 @@ export function Navigation() {
         <Link
           href="/?scan=1"
           className="btn-lime"
-          style={{ padding: '10px 20px', textDecoration: 'none' }}
+          style={{ padding: '8px 16px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}
         >
-          Scan ↗
+          <Camera style={{ width: '13px', height: '13px' }} />
+          <span>Scan 3D</span>
+          <ArrowUpRight style={{ width: '12px', height: '12px', opacity: 0.8 }} />
         </Link>
       </div>
     </header>

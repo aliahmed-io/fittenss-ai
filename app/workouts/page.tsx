@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, ArrowUpRight, Sparkles } from 'lucide-react';
 
 interface Workout {
   id: number;
@@ -348,9 +348,10 @@ export default function WorkoutsPage() {
 
                     <button
                       className="btn-lime"
-                      style={{ padding: '14px 24px', marginTop: '24px', width: '100%', justifyContent: 'center', fontSize: '11px' }}
+                      style={{ padding: '14px 24px', marginTop: '24px', width: '100%', justifyContent: 'center', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '6px' }}
                     >
-                      Start Workout ↗
+                      <span>Start Workout</span>
+                      <ArrowUpRight style={{ width: '13px', height: '13px' }} />
                     </button>
                   </div>
                 </div>
@@ -383,9 +384,11 @@ export default function WorkoutsPage() {
         </div>
         <button
           className="btn-lime"
-          style={{ padding: '16px 32px', fontSize: '12px', flexShrink: 0 }}
+          style={{ padding: '16px 32px', fontSize: '12px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '6px' }}
         >
-          Generate Plan ↗
+          <Sparkles style={{ width: '14px', height: '14px' }} />
+          <span>Generate Plan</span>
+          <ArrowUpRight style={{ width: '13px', height: '13px' }} />
         </button>
       </section>
     </div>

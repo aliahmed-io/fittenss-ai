@@ -21,7 +21,7 @@ import {
 } from '@/lib/bodyModel/anthropometry';
 import { WORKOUT_STRAIN_PRESETS } from '@/lib/bodyModel/muscleHeatmap';
 import PhotoScanModal from '@/components/PhotoScanModal';
-import { Sparkles, Eye, Layers, RotateCcw, Camera, Flame } from 'lucide-react';
+import { Sparkles, Eye, Layers, RotateCcw, Camera, Flame, Check, ArrowUpRight, Plus, Minus } from 'lucide-react';
 
 interface MorphConfig {
   [key: string]: number;
@@ -221,13 +221,13 @@ export default function Home() {
               }}
             >
               Parametric 3D Scan Active
-              <span style={{ color: 'var(--ft-lime)', margin: '0 20px' }}>✦</span>
+              <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
               WHR Index: {metrics.whr.toFixed(2)} ({metrics.archetype})
-              <span style={{ color: 'var(--ft-lime)', margin: '0 20px' }}>✦</span>
+              <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
               GPU Morph Acceleration
-              <span style={{ color: 'var(--ft-lime)', margin: '0 20px' }}>✦</span>
+              <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
               Biometric Feedback Ready
-              <span style={{ color: 'var(--ft-lime)', margin: '0 20px' }}>✦</span>
+              <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
             </span>
           ))}
         </div>
@@ -344,7 +344,19 @@ export default function Home() {
                         : {}),
                     }}
                   >
-                    {m === 'hologram' ? '✨ Hologram' : m === 'heatmap' ? '🔥 Strain Heatmap' : m}
+                    {m === 'hologram' ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                        <Sparkles style={{ width: '10px', height: '10px' }} />
+                        Hologram
+                      </span>
+                    ) : m === 'heatmap' ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                        <Flame style={{ width: '10px', height: '10px' }} />
+                        Strain Heatmap
+                      </span>
+                    ) : (
+                      m
+                    )}
                   </button>
                 ))}
                 <button
@@ -440,7 +452,7 @@ export default function Home() {
               PARAMETRIC / {gender.toUpperCase()}
             </p>
 
-            {/* Quick Camera Angle Bar (Floating at bottom of viewport) */}
+            {/* Quick Camera Angle & Zoom Toolbar (Floating at bottom of viewport) */}
             <div
               style={{
                 position: 'absolute',
@@ -449,6 +461,7 @@ export default function Home() {
                 transform: 'translateX(-50%)',
                 zIndex: 10,
                 display: 'flex',
+                alignItems: 'center',
                 gap: '4px',
                 background: 'rgba(15,15,15,0.85)',
                 backdropFilter: 'blur(8px)',
@@ -475,6 +488,27 @@ export default function Home() {
                   {preset.label}
                 </button>
               ))}
+
+              <div style={{ width: '1px', height: '14px', background: 'var(--ft-rule)', margin: '0 2px' }} />
+
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('visualizer:zoom', { detail: { delta: 1 } }))}
+                className="btn-ghost"
+                title="Zoom in (or scroll mouse wheel)"
+                style={{ padding: '4px 8px', fontSize: '9px', display: 'flex', alignItems: 'center', gap: '3px' }}
+              >
+                <Plus style={{ width: '10px', height: '10px' }} />
+                <span>Zoom</span>
+              </button>
+
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('visualizer:zoom', { detail: { delta: -1 } }))}
+                className="btn-ghost"
+                title="Zoom out (or scroll mouse wheel)"
+                style={{ padding: '4px 8px', fontSize: '9px', display: 'flex', alignItems: 'center', gap: '3px' }}
+              >
+                <Minus style={{ width: '10px', height: '10px' }} />
+              </button>
             </div>
 
             {/* 3D Visualizer Component */}
@@ -883,8 +917,9 @@ export default function Home() {
               flexShrink: 0,
             }}
           >
-            <button className="btn-lime" style={{ padding: '12px 18px', justifyContent: 'center', fontSize: '11px' }}>
-              Generate Workout Plan ↗
+            <button className="btn-lime" style={{ padding: '12px 18px', justifyContent: 'center', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span>Generate Workout Plan</span>
+              <ArrowUpRight style={{ width: '13px', height: '13px' }} />
             </button>
             <button className="btn-ghost" style={{ padding: '10px 18px', justifyContent: 'center', fontSize: '11px' }}>
               Export Biometric Report
@@ -925,7 +960,7 @@ export default function Home() {
                     background: isToday ? 'var(--ft-lime-bg)' : 'transparent',
                   }}
                 >
-                  {isDone && <span style={{ color: 'var(--ft-lime)', fontSize: '11px' }}>✓</span>}
+                  {isDone && <Check style={{ width: '12px', height: '12px', color: 'var(--ft-lime)' }} />}
                   {isToday && <span style={{ width: '5px', height: '5px', background: 'var(--ft-lime)', display: 'block' }} />}
                   {!isDone && !isToday && <span style={{ width: '4px', height: '4px', background: isRest ? 'var(--ft-t3)' : 'var(--ft-rule-strong)', display: 'block' }} />}
                 </div>
@@ -943,7 +978,10 @@ export default function Home() {
               <p className="data-val" style={{ fontSize: '14px', fontWeight: 600, marginTop: '2px' }}>{item.value}</p>
             </div>
           ))}
-          <button className="btn-lime" style={{ padding: '10px 18px' }}>View Progress ↗</button>
+          <button className="btn-lime" style={{ padding: '10px 18px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>View Progress</span>
+            <ArrowUpRight style={{ width: '13px', height: '13px' }} />
+          </button>
         </div>
       </section>
 

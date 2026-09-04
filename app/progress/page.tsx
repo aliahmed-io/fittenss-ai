@@ -73,7 +73,7 @@ export default function ProgressPage() {
           <p className="eyebrow" style={{ marginBottom: '12px' }}>Body Analytics</p>
           <h1 className="d-lg" style={{ color: 'var(--ft-t1)' }}>Progress</h1>
           <p style={{ fontSize: '14px', color: 'var(--ft-t2)', marginTop: '8px' }}>
-            {entries.length} entries · {first.date} → {latest.date}
+            {entries.length} entries · {first.date} to {latest.date}
           </p>
         </div>
         <button
@@ -101,7 +101,7 @@ export default function ProgressPage() {
             label: 'Weight Change',
             value: `${weightDelta > 0 ? '+' : ''}${weightDelta}`,
             unit: 'KG',
-            sub: `${first.weight} → ${latest.weight} KG`,
+            sub: `${first.weight} to ${latest.weight} KG`,
             down: weightDelta < 0,
             lime: weightDelta < 0,
           },
@@ -109,7 +109,7 @@ export default function ProgressPage() {
             label: 'Body Fat',
             value: `${fatDelta > 0 ? '+' : ''}${fatDelta}`,
             unit: '%',
-            sub: `${first.bodyFat}% → ${latest.bodyFat}%`,
+            sub: `${first.bodyFat}% to ${latest.bodyFat}%`,
             down: fatDelta < 0,
             lime: fatDelta < 0,
           },

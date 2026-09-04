@@ -14,7 +14,7 @@ def create_and_export_model(gender_type: str, output_path: str):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.preferences.addon_enable(module='bl_ext.blender_org.mpfb')
 
-    from bl_ext.blender_org.mpfb.services import TargetService
+    from bl_ext.blender_org.mpfb.services.targetservice import HumanObjectProperties, TargetService
 
     # 2. Create Base Human Mesh
     bpy.ops.mpfb.create_human()
@@ -23,28 +23,33 @@ def create_and_export_model(gender_type: str, output_path: str):
         raise RuntimeError("Failed to create Human object via MPFB")
 
     # 3. Configure Phenotype to match athletic reference proportions
-    macro = TargetService.get_default_macro_info_dict()
     is_male = (gender_type.lower() == 'male')
 
     if is_male:
-        macro['gender'] = 1.0       # 100% Male
-        macro['muscle'] = 0.78       # Athletic muscularity matching Zygote reference
-        macro['weight'] = 0.35       # Lean athletic waist
-        macro['proportions'] = 0.68  # Broad clavicles & tapered athletic silhouette
-        macro['height'] = 0.58       # Tall athletic stature
-        macro['age'] = 0.50          # Young adult athletic peak
+        HumanObjectProperties.set_value('gender', 1.0, entity_reference=human)       # 100% Male
+        HumanObjectProperties.set_value('muscle', 0.85, entity_reference=human)      # Muscular athletic density
+        HumanObjectProperties.set_value('weight', 0.35, entity_reference=human)      # Lean athletic waist
+        HumanObjectProperties.set_value('proportions', 0.72, entity_reference=human) # Broad athletic clavicles
+        HumanObjectProperties.set_value('height', 0.60, entity_reference=human)      # Tall athletic stature (1.80m)
+        HumanObjectProperties.set_value('cupsize', 0.0, entity_reference=human)      # ZERO breast tissue (flat chest)
+        HumanObjectProperties.set_value('firmness', 0.85, entity_reference=human)    # Firm pectoral plate
+        HumanObjectProperties.set_value('age', 0.50, entity_reference=human)         # Young adult peak
     else:
-        macro['gender'] = 0.0       # 100% Female
-        macro['muscle'] = 0.58       # Toned, athletic
-        macro['weight'] = 0.35       # Lean athletic body fat
-        macro['proportions'] = 0.58  # Balanced athletic proportions
-        macro['height'] = 0.52       # Standard athletic stature
-        macro['age'] = 0.50          # Young adult
-        macro['cupsize'] = 0.52      # Natural athletic breast contour
-        macro['firmness'] = 0.72     # Toned muscle firmness
+        HumanObjectProperties.set_value('gender', 0.0, entity_reference=human)       # 100% Female
+        HumanObjectProperties.set_value('muscle', 0.58, entity_reference=human)      # Toned, athletic
+        HumanObjectProperties.set_value('weight', 0.35, entity_reference=human)      # Lean athletic body fat
+        HumanObjectProperties.set_value('proportions', 0.58, entity_reference=human) # Balanced proportions
+        HumanObjectProperties.set_value('height', 0.52, entity_reference=human)      # Standard athletic stature
+        HumanObjectProperties.set_value('cupsize', 0.52, entity_reference=human)      # Natural athletic breast contour
+        HumanObjectProperties.set_value('firmness', 0.72, entity_reference=human)    # Toned muscle firmness
+        HumanObjectProperties.set_value('age', 0.50, entity_reference=human)         # Young adult
 
-    TargetService.reapply_macro_details(human, macro)
-    print(f"Applied {gender_type} macro phenotype details.")
+    TargetService.reapply_macro_details(human)
+    print(f"Applied {gender_type} phenotype details via HumanObjectProperties.")
+
+    # Bake phenotype shape keys directly into the base mesh vertex coordinates
+    TargetService.bake_targets(human)
+    print(f"BAKED {gender_type} phenotype targets into base mesh vertices.")
 
     # Remove MPFB helper geometry (joint cubes, helper skirt/pants, genital flaps)
     bpy.context.view_layer.objects.active = human

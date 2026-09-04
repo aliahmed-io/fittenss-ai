@@ -38,40 +38,102 @@ const CAMERA_POSITIONS: Record<CameraViewPreset, { pos: [number, number, number]
 };
 
 /**
- * Animated camera controller that smoothly damps position & target to the selected view.
+ * Animated camera controller that smoothly glides to selected view presets,
+ * then yields 100% control to OrbitControls for uninterrupted mouse wheel zoom & rotation.
  */
 function CameraController({ view }: { view: CameraViewPreset }) {
   const controlsRef = useRef<OrbitControlsImpl>(null);
   const target = CAMERA_POSITIONS[view] ?? CAMERA_POSITIONS.full;
+  const isTransitioningRef = useRef(false);
 
+  // Trigger smooth glide only when preset changes
   useEffect(() => {
-    if (controlsRef.current) {
-      controlsRef.current.target.set(target.target[0], target.target[1], target.target[2]);
-      controlsRef.current.update();
-    }
-  }, [target.target]);
+    isTransitioningRef.current = true;
+  }, [view]);
+
+  // When user interacts with OrbitControls (wheel scroll, drag, touch), instantly stop programmatic override
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    const stopTransition = () => {
+      isTransitioningRef.current = false;
+    };
+
+    controls.addEventListener('start', stopTransition);
+    return () => {
+      controls.removeEventListener('start', stopTransition);
+    };
+  }, []);
+
+  // Listen for toolbar Zoom In / Zoom Out button clicks
+  useEffect(() => {
+    const handleZoom = (e: Event) => {
+      const customEvent = e as CustomEvent<{ delta: number }>;
+      const delta = customEvent.detail?.delta ?? 0;
+      const controls = controlsRef.current;
+      if (!controls) return;
+
+      isTransitioningRef.current = false;
+      const cam = controls.object;
+      const targetLookAt = controls.target;
+      const offset = cam.position.clone().sub(targetLookAt);
+      const factor = delta > 0 ? 0.75 : 1.33;
+      offset.multiplyScalar(factor);
+      const newDist = offset.length();
+
+      if (newDist >= 0.6 && newDist <= 8.0) {
+        cam.position.copy(targetLookAt).add(offset);
+        controls.update();
+      }
+    };
+
+    window.addEventListener('visualizer:zoom', handleZoom);
+    return () => window.removeEventListener('visualizer:zoom', handleZoom);
+  }, []);
 
   useFrame((state, delta) => {
-    // Smooth camera damping
-    state.camera.position.x = THREE.MathUtils.damp(state.camera.position.x, target.pos[0], 6, delta);
-    state.camera.position.y = THREE.MathUtils.damp(state.camera.position.y, target.pos[1], 6, delta);
-    state.camera.position.z = THREE.MathUtils.damp(state.camera.position.z, target.pos[2], 6, delta);
+    if (!isTransitioningRef.current) return;
+
+    const cam = state.camera;
+    const targetPos = target.pos;
+    const targetLookAt = target.target;
+
+    cam.position.x = THREE.MathUtils.damp(cam.position.x, targetPos[0], 5, delta);
+    cam.position.y = THREE.MathUtils.damp(cam.position.y, targetPos[1], 5, delta);
+    cam.position.z = THREE.MathUtils.damp(cam.position.z, targetPos[2], 5, delta);
 
     if (controlsRef.current) {
-      controlsRef.current.target.x = THREE.MathUtils.damp(controlsRef.current.target.x, target.target[0], 6, delta);
-      controlsRef.current.target.y = THREE.MathUtils.damp(controlsRef.current.target.y, target.target[1], 6, delta);
-      controlsRef.current.target.z = THREE.MathUtils.damp(controlsRef.current.target.z, target.target[2], 6, delta);
+      controlsRef.current.target.x = THREE.MathUtils.damp(controlsRef.current.target.x, targetLookAt[0], 5, delta);
+      controlsRef.current.target.y = THREE.MathUtils.damp(controlsRef.current.target.y, targetLookAt[1], 5, delta);
+      controlsRef.current.target.z = THREE.MathUtils.damp(controlsRef.current.target.z, targetLookAt[2], 5, delta);
       controlsRef.current.update();
+    }
+
+    // Stop transitioning once arrived within close threshold
+    const distSq =
+      Math.pow(cam.position.x - targetPos[0], 2) +
+      Math.pow(cam.position.y - targetPos[1], 2) +
+      Math.pow(cam.position.z - targetPos[2], 2);
+
+    if (distSq < 0.001) {
+      isTransitioningRef.current = false;
     }
   });
 
   return (
     <OrbitControls
       ref={controlsRef}
+      makeDefault
       enablePan={false}
-      minDistance={1.0}
-      maxDistance={6.0}
-      minPolarAngle={Math.PI * 0.1}
+      enableZoom={true}
+      zoomSpeed={1.2}
+      enableDamping={true}
+      dampingFactor={0.08}
+      rotateSpeed={0.8}
+      minDistance={0.6}
+      maxDistance={8.0}
+      minPolarAngle={Math.PI * 0.05}
       maxPolarAngle={Math.PI * 0.52} // Prevent dipping under the floor
     />
   );

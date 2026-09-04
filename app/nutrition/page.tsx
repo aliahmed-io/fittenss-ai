@@ -2,7 +2,7 @@
 
 import React, { useCallback, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
-import { Camera, Upload, X, Loader2, Plus, CheckSquare, Square } from 'lucide-react';
+import { Camera, Upload, X, Loader2, Plus, CheckSquare, Square, ArrowUpRight, Sparkles } from 'lucide-react';
 import type { MealScanResult } from '@/app/api/analyze-meal/route';
 
 interface Meal {
@@ -323,7 +323,14 @@ export default function NutritionPage() {
           <h2 className="d-md" style={{ marginBottom: '8px' }}>Generate Meal Plan</h2>
           <p style={{ fontSize: '13px', color: 'var(--ft-t2)', maxWidth: '480px' }}>Personalized nutrition based on your body scan, goals, and dietary preferences.</p>
         </div>
-        <button className="btn-lime" style={{ padding: '16px 32px', fontSize: '12px', flexShrink: 0 }}>Generate Plan ↗</button>
+        <button
+          className="btn-lime"
+          style={{ padding: '16px 32px', fontSize: '12px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '6px' }}
+        >
+          <Sparkles style={{ width: '14px', height: '14px' }} />
+          <span>Generate Plan</span>
+          <ArrowUpRight style={{ width: '13px', height: '13px' }} />
+        </button>
       </section>
 
       {/* ════════════════════════════════════════════
@@ -454,7 +461,10 @@ export default function NutritionPage() {
                       Analyzing...
                     </>
                   ) : (
-                    'Analyze Meal ↗'
+                    <>
+                      <Sparkles style={{ width: '13px', height: '13px' }} />
+                      <span>Analyze Meal</span>
+                    </>
                   )}
                 </button>
               )}
@@ -582,9 +592,10 @@ export default function NutritionPage() {
                         onClick={addSelectedToLog}
                         disabled={selected.size === 0}
                         className="btn-lime"
-                        style={{ flex: 1, justifyContent: 'center', padding: '12px', fontSize: '11px', opacity: selected.size === 0 ? 0.4 : 1, cursor: selected.size === 0 ? 'not-allowed' : 'pointer' }}
+                        style={{ flex: 1, justifyContent: 'center', padding: '12px', fontSize: '11px', opacity: selected.size === 0 ? 0.4 : 1, cursor: selected.size === 0 ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
                       >
-                        Add {selected.size} item{selected.size !== 1 ? 's' : ''} to Log ↗
+                        <Plus style={{ width: '13px', height: '13px' }} />
+                        <span>Add {selected.size} item{selected.size !== 1 ? 's' : ''} to Log</span>
                       </button>
                       <button onClick={closeScan} className="btn-ghost" style={{ padding: '12px 16px', fontSize: '11px' }}>Discard</button>
                     </div>
