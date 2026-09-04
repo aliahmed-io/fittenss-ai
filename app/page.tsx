@@ -71,10 +71,20 @@ export default function Home() {
 
   const handleSliderChange = (name: string, value: number) => {
     setMorphValues((prev) => ({ ...prev, [name]: value }));
+    if (name === 'Height') {
+      setUserInputs((prev) => ({ ...prev, height: Math.round(value).toString() }));
+    }
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setUserInputs((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+    const { name, value } = e.target;
+    setUserInputs((prev) => ({ ...prev, [name]: value }));
+    if (name === 'height') {
+      const num = parseFloat(value);
+      if (!isNaN(num) && num >= 100 && num <= 250) {
+        setMorphValues((prev) => ({ ...prev, Height: num }));
+      }
+    }
   };
 
   const handleGenderChange = (newGender: Gender) => {
@@ -159,7 +169,7 @@ export default function Home() {
         morphs: ['Height','Neck Height','Neck','Shoulders','Shoulder Angle','Breast','Bust Girth','Arm Length','Upper Arm Girth','Wrist','Stomach Form','Waist','Hip Girth','Hip Height','Thigh Girth','Calf Girth','lower Leg'],
         morphslowlimit: [110,5,27,12,0,70,56,16,22,9,0,65,86,72,49,26,39],
         morphshighlimit: [210,9,35,16,2,100,76,27,32,18,2,85,114,92,66,44,53],
-        morphslimit: [155,7,31,14,1,85,66,23,27,14,1,75,100,82,58,36,45],
+        morphslimit: [165,7,31,14,1,85,66,23,27,14,1,75,100,82,58,36,45],
       };
       const i = fc.morphs.indexOf(name);
       if (i !== -1) return { min: fc.morphslowlimit[i]!, max: fc.morphshighlimit[i]!, default: fc.morphslimit[i]! };
@@ -167,8 +177,8 @@ export default function Home() {
     const mc = {
       morphs: ['Height','Chest','Neck','Neck Height','Shoulders',"Shoulder's Slope",'Bust Girth','Stomach Form','Waist','Arm Length','Upper Arm Girth','Wrist','Hip Girth','Hip Height','Thigh Girth','Lower Leg Length','Calf'],
       morphslowlimit: [120,83.76,32,9.36,11.3,0,81,0,64,21,12,12,96,29,30,29,49],
-      morphshighlimit: [190,130.56,40,16,16,2,97,2,100,32,20,20,124,46,63,46,61],
-      morphslimit: [160,96.67,37,12.36,13.07,1,86,1,76.66,26,15,16,112,36,42,38,55],
+      morphshighlimit: [220,130.56,40,16,16,2,97,2,100,32,20,20,124,46,63,46,61],
+      morphslimit: [178,96.67,37,12.36,13.07,1,86,1,76.66,26,15,16,112,36,42,38,55],
     };
     const i = mc.morphs.indexOf(name);
     if (i !== -1) return { min: mc.morphslowlimit[i]!, max: mc.morphshighlimit[i]!, default: mc.morphslimit[i]! };
@@ -322,7 +332,7 @@ export default function Home() {
                 </span>
               </div>
               <p style={{ fontSize: '11px', color: 'var(--ft-t3)', marginTop: '2px' }}>
-                Rotate 360° · Pinch or scroll to zoom · Select camera presets below
+                Rotate 360° · Right-click or drag to pan · Scroll to zoom
               </p>
             </div>
 
@@ -987,6 +997,7 @@ export default function Home() {
 
       {/* Photo Biometric Contour Scanner Modal */}
       <PhotoScanModal
+        key={gender}
         isOpen={isPhotoScanOpen}
         onClose={() => setIsPhotoScanOpen(false)}
         gender={gender}

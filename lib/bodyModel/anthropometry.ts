@@ -145,7 +145,7 @@ export function generateSmartMeasurements(
     const shoulderBase = 14 * heightFactor + bmiDelta * 0.08;
 
     return {
-      Height: Math.round(h * 0.95), // mapped to model height scale
+      Height: Math.round(h), // Exact stature in centimeters
       'Neck Height': Math.min(9, Math.max(5, +(7 * heightFactor).toFixed(1))),
       Neck: Math.min(35, Math.max(27, +(31 + bmiDelta * 0.25).toFixed(1))),
       Shoulders: Math.min(16, Math.max(12, +shoulderBase.toFixed(1))),
@@ -168,7 +168,7 @@ export function generateSmartMeasurements(
   // Male defaults
   const fatBonus = (bf - 15) * 0.4;
   return {
-    Height: Math.round(h * 0.95),
+    Height: Math.round(h),
     Chest: Math.min(130, Math.max(84, +(96 + bmiDelta * 1.2 + fatBonus * 0.5).toFixed(1))),
     Neck: Math.min(40, Math.max(32, +(37 + bmiDelta * 0.3).toFixed(1))),
     'Neck Height': Math.min(16, Math.max(9.5, +(12.3 * heightFactor).toFixed(1))),

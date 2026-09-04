@@ -30,16 +30,16 @@ export interface BodyVisualizerProps {
 }
 
 const CAMERA_POSITIONS: Record<CameraViewPreset, { pos: [number, number, number]; target: [number, number, number] }> = {
-  full:    { pos: [0, 0.85, 4.35],  target: [0, 0.85, 0] },
-  torso:   { pos: [0, 1.05, 2.65],  target: [0, 1.00, 0] },
-  lower:   { pos: [0, 0.46, 2.60],  target: [0, 0.40, 0] },
-  profile: { pos: [3.9, 0.85, 0.0], target: [0, 0.85, 0] },
-  back:    { pos: [0, 0.85, -4.35], target: [0, 0.85, 0] },
+  full:    { pos: [0, 1.05, 3.45],  target: [0, 1.05, 0] },
+  torso:   { pos: [0, 1.30, 1.85],  target: [0, 1.28, 0] },
+  lower:   { pos: [0, 0.55, 2.20],  target: [0, 0.50, 0] },
+  profile: { pos: [3.2, 1.10, 0.0], target: [0, 1.10, 0] },
+  back:    { pos: [0, 1.10, -3.45], target: [0, 1.10, 0] },
 };
 
 /**
  * Animated camera controller that smoothly glides to selected view presets,
- * then yields 100% control to OrbitControls for uninterrupted mouse wheel zoom & rotation.
+ * then yields 100% control to OrbitControls for uninterrupted mouse wheel zoom, rotation, and pan.
  */
 function CameraController({ view }: { view: CameraViewPreset }) {
   const controlsRef = useRef<OrbitControlsImpl>(null);
@@ -125,16 +125,27 @@ function CameraController({ view }: { view: CameraViewPreset }) {
     <OrbitControls
       ref={controlsRef}
       makeDefault
-      enablePan={false}
+      enablePan={true}
+      screenSpacePanning={true}
+      panSpeed={1.0}
       enableZoom={true}
       zoomSpeed={1.2}
       enableDamping={true}
       dampingFactor={0.08}
       rotateSpeed={0.8}
-      minDistance={0.6}
+      minDistance={0.5}
       maxDistance={8.0}
       minPolarAngle={Math.PI * 0.05}
-      maxPolarAngle={Math.PI * 0.52} // Prevent dipping under the floor
+      maxPolarAngle={Math.PI * 0.55}
+      mouseButtons={{
+        LEFT: THREE.MOUSE.ROTATE,
+        MIDDLE: THREE.MOUSE.DOLLY,
+        RIGHT: THREE.MOUSE.PAN,
+      }}
+      touches={{
+        ONE: THREE.TOUCH.ROTATE,
+        TWO: THREE.TOUCH.DOLLY_PAN,
+      }}
     />
   );
 }
@@ -218,6 +229,9 @@ function BodyMesh({
   const normalMap = useMemo(() => getProceduralMuscleNormalMap(), []);
   const normalScale = useMemo(() => calculateDynamicNormalScale(bodyFat), [bodyFat]);
 
+  const isFemale = config.character.includes('female');
+  const baseHeight = isFemale ? 1.601 : 1.858;
+
   // Derive active mesh geometry and attach vertex colors for heatmap mode in useMemo
   const meshGeometry = useMemo(() => {
     const geom = processedModel.geometry.clone();
@@ -225,11 +239,11 @@ function BodyMesh({
       const positions = geom.attributes.position!.array as Float32Array;
       const count = geom.attributes.position!.count;
       const activeFatigue = muscleFatigue ?? WORKOUT_STRAIN_PRESETS[0]!.fatigue;
-      const colors = generateMuscleHeatmapColors(positions, count, 1.72, activeFatigue, false);
+      const colors = generateMuscleHeatmapColors(positions, count, baseHeight, activeFatigue, true);
       geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     }
     return geom;
-  }, [processedModel, materialMode, muscleFatigue]);
+  }, [processedModel, materialMode, muscleFatigue, baseHeight]);
 
   // Ensure morphTargetInfluences are initialized on both meshes immediately
   useEffect(() => {
@@ -445,8 +459,15 @@ function BodyMesh({
     }
   });
 
+  // Dynamic height scaling anchored at grounded feet (Y = 0)
+  const targetHeightCm = morphValues['Height'] ?? (isFemale ? 165 : 178);
+  const baseHeightCm = isFemale ? 160.1 : 185.8;
+  const heightScaleY = THREE.MathUtils.clamp(targetHeightCm / baseHeightCm, 0.75, 1.35);
+  // Human anthropometric scaling: transverse cross-section scales at square root of stature
+  const scaleXZ = Math.sqrt(heightScaleY);
+
   return (
-    <group position={[0, 0, 0]}>
+    <group scale={[scaleXZ, heightScaleY, scaleXZ]} position={[0, 0, 0]}>
       {/* Primary body mesh with constructor args to guarantee morphTargetInfluences initialization */}
       <mesh
         ref={meshRef}

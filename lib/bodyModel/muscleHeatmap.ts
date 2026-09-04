@@ -122,15 +122,18 @@ export function generateMuscleHeatmapColors(
   numVerts: number,
   totalHeight: number,
   fatigue: MuscleFatigueState,
-  isDarkBase: boolean
+  isDarkBase: boolean = true
 ): Float32Array {
   const colors = new Float32Array(numVerts * 3);
   const h = totalHeight;
 
-  // Base neutral color
-  const baseR = isDarkBase ? 0.12 : 0.84;
-  const baseG = isDarkBase ? 0.12 : 0.82;
-  const baseB = isDarkBase ? 0.12 : 0.78;
+  // Base neutral tone (charcoal obsidian in dark mode, sculpted alabaster in light mode)
+  const baseR = isDarkBase ? 0.11 : 0.82;
+  const baseG = isDarkBase ? 0.12 : 0.83;
+  const baseB = isDarkBase ? 0.15 : 0.85;
+
+  // Coronal mid-plane dividing anterior (front) from posterior (back) in our GLB coordinate space
+  const coronalMidZ = 0.035;
 
   for (let i = 0; i < numVerts; i++) {
     const idx = i * 3;
@@ -140,88 +143,94 @@ export function generateMuscleHeatmapColors(
 
     let vertexFatigue = 0.0;
 
-    // 1. Chest (Pectoralis Major)
-    if (y > 0.64 * h && y < 0.76 * h && z > 0.015 && Math.abs(x) < 0.13 * h) {
-      const weight = Math.sin(((y - 0.64 * h) / (0.12 * h)) * Math.PI);
+    // 1. Chest (Pectoralis Major) — Anterior upper torso
+    if (y > 0.64 * h && y < 0.78 * h && z > coronalMidZ && Math.abs(x) < 0.14 * h) {
+      const weight = Math.sin(((y - 0.64 * h) / (0.14 * h)) * Math.PI);
       vertexFatigue = Math.max(vertexFatigue, fatigue.chest * weight);
     }
 
-    // 2. Shoulders (Deltoids)
-    if (y > 0.74 * h && y < 0.87 * h && Math.abs(x) > 0.065 * h && Math.abs(x) < 0.16 * h) {
-      const weight = Math.sin(((y - 0.74 * h) / (0.13 * h)) * Math.PI);
+    // 2. Shoulders (Deltoids) — Lateral caps
+    if (y > 0.72 * h && y < 0.86 * h && Math.abs(x) > 0.08 * h && Math.abs(x) < 0.18 * h) {
+      const weight = Math.sin(((y - 0.72 * h) / (0.14 * h)) * Math.PI);
       vertexFatigue = Math.max(vertexFatigue, fatigue.shoulders * weight);
     }
 
-    // 3. Lats (Latissimus Dorsi / Upper Back)
-    if (y > 0.58 * h && y < 0.74 * h && z < -0.01 && Math.abs(x) < 0.14 * h) {
-      const weight = Math.sin(((y - 0.58 * h) / (0.16 * h)) * Math.PI);
+    // 3. Lats (Latissimus Dorsi) — Posterior mid-back wings
+    if (y > 0.55 * h && y < 0.74 * h && z <= coronalMidZ + 0.01 && Math.abs(x) > 0.06 * h && Math.abs(x) < 0.18 * h) {
+      const weight = Math.sin(((y - 0.55 * h) / (0.19 * h)) * Math.PI);
       vertexFatigue = Math.max(vertexFatigue, fatigue.lats * weight);
     }
 
-    // 4. Abs (Rectus Abdominis / Core)
-    if (y > 0.53 * h && y < 0.65 * h && z > 0.02 && Math.abs(x) < 0.09 * h) {
-      const weight = Math.sin(((y - 0.53 * h) / (0.12 * h)) * Math.PI);
+    // 4. Abs (Rectus Abdominis / Core) — Anterior midsection
+    if (y > 0.49 * h && y < 0.65 * h && z > coronalMidZ && Math.abs(x) < 0.10 * h) {
+      const weight = Math.sin(((y - 0.49 * h) / (0.16 * h)) * Math.PI);
       vertexFatigue = Math.max(vertexFatigue, fatigue.abs * weight);
     }
 
-    // 5. Arms (Biceps Anterior / Triceps Posterior)
-    if (y > 0.58 * h && y < 0.78 * h && Math.abs(x) > 0.12 * h) {
-      const armWeight = Math.sin(((y - 0.58 * h) / (0.20 * h)) * Math.PI);
-      if (z >= 0) {
+    // 5. Arms — Biceps (Anterior) vs Triceps (Posterior)
+    if (y > 0.52 * h && y < 0.75 * h && Math.abs(x) > 0.14 * h) {
+      const armWeight = Math.sin(((y - 0.52 * h) / (0.23 * h)) * Math.PI);
+      if (z > coronalMidZ) {
         vertexFatigue = Math.max(vertexFatigue, fatigue.biceps * armWeight);
       } else {
         vertexFatigue = Math.max(vertexFatigue, fatigue.triceps * armWeight);
       }
     }
 
-    // 6. Glutes (Gluteus Maximus Posterior)
-    if (y > 0.46 * h && y < 0.56 * h && z < -0.015 && Math.abs(x) < 0.12 * h) {
-      const weight = Math.sin(((y - 0.46 * h) / (0.10 * h)) * Math.PI);
+    // 6. Glutes (Gluteus Maximus) — Posterior pelvic shelf
+    if (y > 0.41 * h && y < 0.55 * h && z <= coronalMidZ + 0.01 && Math.abs(x) < 0.15 * h) {
+      const weight = Math.sin(((y - 0.41 * h) / (0.14 * h)) * Math.PI);
       vertexFatigue = Math.max(vertexFatigue, fatigue.glutes * weight);
     }
 
-    // 7. Quads (Quadriceps Femoris Anterior)
-    if (y > 0.28 * h && y < 0.49 * h && z > 0 && Math.abs(x) < 0.13 * h) {
-      const weight = Math.sin(((y - 0.28 * h) / (0.21 * h)) * Math.PI);
+    // 7. Quads (Quadriceps Femoris) — Anterior thighs
+    if (y > 0.25 * h && y < 0.48 * h && z > coronalMidZ && Math.abs(x) > 0.04 * h && Math.abs(x) < 0.15 * h) {
+      const weight = Math.sin(((y - 0.25 * h) / (0.23 * h)) * Math.PI);
       vertexFatigue = Math.max(vertexFatigue, fatigue.quads * weight);
     }
 
-    // 8. Hamstrings (Posterior Leg)
-    if (y > 0.28 * h && y < 0.46 * h && z < 0 && Math.abs(x) < 0.12 * h) {
-      const weight = Math.sin(((y - 0.28 * h) / (0.18 * h)) * Math.PI);
+    // 8. Hamstrings (Posterior Leg) — Posterior thighs
+    if (y > 0.25 * h && y < 0.46 * h && z <= coronalMidZ && Math.abs(x) > 0.04 * h && Math.abs(x) < 0.14 * h) {
+      const weight = Math.sin(((y - 0.25 * h) / (0.21 * h)) * Math.PI);
       vertexFatigue = Math.max(vertexFatigue, fatigue.hamstrings * weight);
     }
 
-    // 9. Calves (Gastrocnemius)
-    if (y > 0.10 * h && y < 0.27 * h && Math.abs(x) < 0.10 * h) {
-      const weight = Math.sin(((y - 0.10 * h) / (0.17 * h)) * Math.PI);
+    // 9. Calves (Gastrocnemius / Soleus) — Lower legs posterior
+    if (y > 0.08 * h && y < 0.26 * h && Math.abs(x) > 0.03 * h && Math.abs(x) < 0.11 * h) {
+      const weight = Math.sin(((y - 0.08 * h) / (0.18 * h)) * Math.PI);
       vertexFatigue = Math.max(vertexFatigue, fatigue.calves * weight);
     }
 
-    // Thermal color interpolation
-    if (vertexFatigue < 0.18) {
-      // Neutral base
+    // High-visibility glowing thermal gradient:
+    // Base Slate -> Electric Cyan -> Vivid Lime -> Radiant Amber -> Scorching Crimson
+    if (vertexFatigue < 0.15) {
       colors[idx] = baseR;
       colors[idx + 1] = baseG;
       colors[idx + 2] = baseB;
-    } else if (vertexFatigue < 0.55) {
-      // Blend base to #CBFF00 (Electric Lime: R 0.80, G 1.0, B 0.0)
-      const t = (vertexFatigue - 0.18) / (0.55 - 0.18);
-      colors[idx] = THREE.MathUtils.lerp(baseR, 0.796, t);
-      colors[idx + 1] = THREE.MathUtils.lerp(baseG, 1.0, t);
-      colors[idx + 2] = THREE.MathUtils.lerp(baseB, 0.0, t);
-    } else if (vertexFatigue < 0.80) {
-      // Blend #CBFF00 to #FFAA00 (Amber: R 1.0, G 0.67, B 0.0)
-      const t = (vertexFatigue - 0.55) / (0.80 - 0.55);
+    } else if (vertexFatigue < 0.45) {
+      // Blend Slate to Electric Cyan (#00E5FF)
+      const t = (vertexFatigue - 0.15) / (0.45 - 0.15);
+      colors[idx] = THREE.MathUtils.lerp(baseR, 0.0, t);
+      colors[idx + 1] = THREE.MathUtils.lerp(baseG, 0.90, t);
+      colors[idx + 2] = THREE.MathUtils.lerp(baseB, 1.0, t);
+    } else if (vertexFatigue < 0.70) {
+      // Blend Electric Cyan to Vivid Lime (#CBFF00)
+      const t = (vertexFatigue - 0.45) / (0.70 - 0.45);
+      colors[idx] = THREE.MathUtils.lerp(0.0, 0.796, t);
+      colors[idx + 1] = 1.0;
+      colors[idx + 2] = THREE.MathUtils.lerp(1.0, 0.0, t);
+    } else if (vertexFatigue < 0.85) {
+      // Blend Vivid Lime to Radiant Amber (#FFAA00)
+      const t = (vertexFatigue - 0.70) / (0.85 - 0.70);
       colors[idx] = THREE.MathUtils.lerp(0.796, 1.0, t);
       colors[idx + 1] = THREE.MathUtils.lerp(1.0, 0.667, t);
       colors[idx + 2] = 0.0;
     } else {
-      // Blend #FFAA00 to #FF2233 (Hot Crimson: R 1.0, G 0.13, B 0.20)
-      const t = Math.min(1.0, (vertexFatigue - 0.80) / 0.20);
+      // Blend Radiant Amber to Scorching Crimson (#FF1744)
+      const t = Math.min(1.0, (vertexFatigue - 0.85) / 0.15);
       colors[idx] = 1.0;
-      colors[idx + 1] = THREE.MathUtils.lerp(0.667, 0.133, t);
-      colors[idx + 2] = THREE.MathUtils.lerp(0.0, 0.20, t);
+      colors[idx + 1] = THREE.MathUtils.lerp(0.667, 0.09, t);
+      colors[idx + 2] = THREE.MathUtils.lerp(0.0, 0.27, t);
     }
   }
 
