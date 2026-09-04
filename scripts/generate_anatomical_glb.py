@@ -1,8 +1,6 @@
 import os
 import sys
-import math
 import bpy
-from mathutils import Vector
 
 def create_and_export_model(gender_type: str, output_path: str):
     print(f"\n=======================================================")
@@ -14,7 +12,11 @@ def create_and_export_model(gender_type: str, output_path: str):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.preferences.addon_enable(module='bl_ext.blender_org.mpfb')
 
-    from bl_ext.blender_org.mpfb.services.targetservice import HumanObjectProperties, TargetService
+    import bl_ext.blender_org.mpfb as mpfb
+    from bl_ext.blender_org.mpfb.services.targetservice import TargetService
+
+    mpfb_root = os.path.dirname(mpfb.__file__)
+    targets_root = os.path.join(mpfb_root, 'data', 'targets')
 
     # 2. Create Base Human Mesh
     bpy.ops.mpfb.create_human()
@@ -22,40 +24,42 @@ def create_and_export_model(gender_type: str, output_path: str):
     if not human:
         raise RuntimeError("Failed to create Human object via MPFB")
 
-    # 3. Configure Phenotype to match athletic reference proportions
+    def load_t(subpath, name=None):
+        p = os.path.join(targets_root, subpath)
+        if not os.path.exists(p):
+            raise FileNotFoundError(f"Target not found: {p}")
+        return TargetService.load_target(human, p, name=name)
+
     is_male = (gender_type.lower() == 'male')
 
+    # 3. Configure Phenotype to match athletic reference proportions using authentic MakeHuman macro targets
     if is_male:
-        HumanObjectProperties.set_value('gender', 1.0, entity_reference=human)       # 100% Male
-        HumanObjectProperties.set_value('muscle', 0.85, entity_reference=human)      # Muscular athletic density
-        HumanObjectProperties.set_value('weight', 0.35, entity_reference=human)      # Lean athletic waist
-        HumanObjectProperties.set_value('proportions', 0.72, entity_reference=human) # Broad athletic clavicles
-        HumanObjectProperties.set_value('height', 0.60, entity_reference=human)      # Tall athletic stature (1.80m)
-        HumanObjectProperties.set_value('cupsize', 0.0, entity_reference=human)      # ZERO breast tissue (flat chest)
-        HumanObjectProperties.set_value('firmness', 0.85, entity_reference=human)    # Firm pectoral plate
-        HumanObjectProperties.set_value('age', 0.50, entity_reference=human)         # Young adult peak
-    else:
-        HumanObjectProperties.set_value('gender', 0.0, entity_reference=human)       # 100% Female
-        HumanObjectProperties.set_value('muscle', 0.58, entity_reference=human)      # Toned, athletic
-        HumanObjectProperties.set_value('weight', 0.35, entity_reference=human)      # Lean athletic body fat
-        HumanObjectProperties.set_value('proportions', 0.58, entity_reference=human) # Balanced proportions
-        HumanObjectProperties.set_value('height', 0.52, entity_reference=human)      # Standard athletic stature
-        HumanObjectProperties.set_value('cupsize', 0.52, entity_reference=human)      # Natural athletic breast contour
-        HumanObjectProperties.set_value('firmness', 0.72, entity_reference=human)    # Toned muscle firmness
-        HumanObjectProperties.set_value('age', 0.50, entity_reference=human)         # Young adult
+        sk_gender = load_t('macrodetails/universal-male-young-averagemuscle-averageweight.target.gz', 'Male_Base')
+        sk_race = load_t('macrodetails/caucasian-male-young.target.gz', 'Male_Race')
+        sk_vshape = load_t('torso/torso-vshape-incr.target.gz', 'Male_Vshape')
+        sk_pecs = load_t('torso/torso-muscle-pectoral-incr.target.gz', 'Male_Pecs')
 
-    TargetService.reapply_macro_details(human)
-    print(f"Applied {gender_type} phenotype details via HumanObjectProperties.")
+        sk_gender.value = 1.0
+        sk_race.value = 0.50
+        sk_vshape.value = 0.35
+        sk_pecs.value = 0.35
+    else:
+        sk_gender = load_t('macrodetails/universal-female-young-averagemuscle-averageweight.target.gz', 'Female_Base')
+        sk_race = load_t('macrodetails/caucasian-female-young.target.gz', 'Female_Race')
+        sk_breast = load_t('breast/female-young-averagemuscle-averageweight-averagecup-maxfirmness.target.gz', 'Female_Breast')
+
+        sk_gender.value = 1.0
+        sk_race.value = 0.50
+        sk_breast.value = 0.55
 
     # Bake phenotype shape keys directly into the base mesh vertex coordinates
     TargetService.bake_targets(human)
     print(f"BAKED {gender_type} phenotype targets into base mesh vertices.")
 
-    # Remove MPFB helper geometry (joint cubes, helper skirt/pants, genital flaps)
+    # Remove MPFB helper geometry
     bpy.context.view_layer.objects.active = human
     human.select_set(True)
     bpy.ops.mpfb.delete_helpers()
-    print(f"Deleted helper geometry. Remaining pure anatomical vertices: {len(human.data.vertices)}")
 
     # Ground feet strictly at Z = 0
     min_z = min(v.co.z for v in human.data.vertices)
@@ -65,299 +69,50 @@ def create_and_export_model(gender_type: str, output_path: str):
             v.co.z += offset_z
         print(f"Grounded model feet: offset Z by {offset_z:.4f}m (lowest point now at Z=0.0000m)")
 
+    zs = [v.co.z for v in human.data.vertices]
+    z_min, z_max = min(zs), max(zs)
+    print(f"Standing height: {z_max - z_min:.3f}m ({(z_max - z_min)*100:.1f}cm)")
+
     # 4. Bake Basis Shape Key
     human.shape_key_add(name='Basis', from_mix=False)
-    basis_blocks = human.data.shape_keys.key_blocks['Basis']
 
-    # Compute bounding ranges for anatomical zoning
-    zs = [v.co.z for v in human.data.vertices]
-    z_min = min(zs)
-    z_max = max(zs)
-    height = z_max - z_min
-    print(f"Model height: {height:.3f}m ({height*100:.1f}cm)")
+    # 5. Load Real Scientific Anatomical Shape Keys from MakeHuman library
+    load_t('legs/measure-thigh-circ-incr.target.gz', 'Thighs_Muscular')
+    load_t('legs/measure-thigh-circ-decr.target.gz', 'Thighs_Slim')
+    load_t('legs/measure-calf-circ-incr.target.gz', 'Calves_Muscular')
+    load_t('legs/measure-calf-circ-decr.target.gz', 'Calves_Slim')
+    load_t('buttocks/buttocks-volume-incr.target.gz', 'Glutes_Full')
+    load_t('buttocks/buttocks-volume-decr.target.gz', 'Glutes_Slim')
+    load_t('torso/measure-waist-circ-decr.target.gz', 'Waist_Cinch')
+    load_t('torso/measure-waist-circ-incr.target.gz', 'Waist_Expand')
 
-    # 5. Define shape keys to bake into the GLB
-    # Every shape key deforms specific anatomical vertex groups smoothly
-    def add_morph(name: str, deformation_fn):
-        sk = human.shape_key_add(name=name, from_mix=False)
-        for i, v in enumerate(human.data.vertices):
-            co = v.co.copy()
-            t = (co.z - z_min) / height
-            dx, dy, dz = deformation_fn(co.x, co.y, co.z, t)
-            sk.data[i].co = Vector((co.x + dx, co.y + dy, co.z + dz))
-        sk.value = 0.0
-        print(f"  + Baked Morph Target: '{name}' (default weight 0.0)")
+    if is_male:
+        load_t('torso/torso-muscle-pectoral-incr.target.gz', 'Chest_Expand')
+        load_t('torso/torso-muscle-pectoral-decr.target.gz', 'Chest_Reduce')
+    else:
+        load_t('breast/female-young-averagemuscle-averageweight-maxcup-maxfirmness.target.gz', 'Bust_Expand')
+        load_t('breast/female-young-averagemuscle-averageweight-mincup-maxfirmness.target.gz', 'Bust_Reduce')
+        load_t('torso/measure-bust-circ-incr.target.gz', 'Chest_Expand')
+        load_t('torso/measure-bust-circ-decr.target.gz', 'Chest_Reduce')
 
-    # Helper Gaussian falloff
-    def gaussian(val, center, sigma):
-        return math.exp(-0.5 * ((val - center) / sigma) ** 2)
+    load_t('torso/measure-bust-circ-incr.target.gz', 'Bust_Girth')
+    load_t('torso/measure-shoulder-dist-incr.target.gz', 'Shoulders_Wide')
+    load_t('torso/measure-shoulder-dist-decr.target.gz', 'Shoulders_Narrow')
+    load_t('arms/measure-upperarm-circ-incr.target.gz', 'Arms_Muscular')
+    load_t('arms/measure-upperarm-circ-decr.target.gz', 'Arms_Slim')
+    load_t('neck/measure-neck-circ-incr.target.gz', 'Neck_Muscular')
+    load_t('neck/measure-neck-circ-decr.target.gz', 'Neck_Slim')
+    load_t('stomach/stomach-tone-incr.target.gz', 'Stomach_Tone')
+    load_t('stomach/stomach-tone-decr.target.gz', 'Stomach_Full')
 
-    # --- Shape Key 1: Systemic Muscle Hypertrophy & Definition ---
-    def morph_muscle(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        # Pectorals forward and lateral expansion
-        if 0.64 < t < 0.79 and y > 0.0 and abs(x) < 0.22:
-            w = gaussian(t, 0.72, 0.05) * gaussian(abs(x), 0.10, 0.06)
-            dy += 0.032 * w
-            dx += 0.012 * math.copysign(w, x)
-        # Latissimus Dorsi back expansion
-        if 0.58 < t < 0.76 and y < -0.01 and 0.08 < abs(x) < 0.24:
-            w = gaussian(t, 0.68, 0.06) * gaussian(abs(x), 0.16, 0.05)
-            dx += 0.024 * math.copysign(w, x)
-            dy -= 0.018 * w
-        # Deltoids lateral cap
-        if 0.74 < t < 0.84 and abs(x) > 0.16:
-            w = gaussian(t, 0.79, 0.04) * gaussian(abs(x), 0.22, 0.05)
-            dx += 0.026 * math.copysign(w, x)
-            dy += 0.010 * w
-        # Biceps & Triceps
-        if 0.54 < t < 0.74 and abs(x) > 0.22:
-            w = gaussian(t, 0.64, 0.06)
-            dx += 0.016 * math.copysign(w, x)
-            dy += 0.012 * math.copysign(w, y)
-        # Quadriceps flare
-        if 0.26 < t < 0.48 and 0.05 < abs(x) < 0.20:
-            w = gaussian(t, 0.38, 0.06)
-            dx += 0.018 * math.copysign(w, x)
-            if y > 0.0:
-                dy += 0.022 * w
-        return dx, dy, dz
-
-    # --- Shape Key 2: Body Fat Increase ---
-    def morph_weight_more(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.48 < t < 0.66:
-            w = gaussian(t, 0.56, 0.06)
-            if is_male:
-                if y > 0:
-                    dy += 0.045 * w
-                dx += 0.028 * math.copysign(w, x)
-            else:
-                if y > 0:
-                    dy += 0.030 * w
-                dx += 0.040 * math.copysign(w, x)
-        if 0.28 < t < 0.54:
-            w = gaussian(t, 0.44, 0.07)
-            dx += (0.042 if not is_male else 0.022) * math.copysign(w, x)
-            dy += 0.020 * w
-        return dx, dy, dz
-
-    # --- Shape Key 3: Lean Definition / Fat Decrease ---
-    def morph_weight_less(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.48 < t < 0.66:
-            w = gaussian(t, 0.56, 0.05)
-            dx -= 0.024 * math.copysign(w, x)
-            if y > 0:
-                dy -= 0.028 * w
-        if 0.28 < t < 0.50:
-            w = gaussian(t, 0.40, 0.06)
-            dx -= 0.018 * math.copysign(w, x)
-        return dx, dy, dz
-
-    # --- Shape Key 4: Waist Cinch (Narrower V-Taper / Hourglass) ---
-    def morph_waist_cinch(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.49 < t < 0.65:
-            w = gaussian(t, 0.57, 0.045)
-            dx -= 0.034 * math.copysign(w, x)
-            dy -= 0.016 * math.copysign(w, y)
-        return dx, dy, dz
-
-    # --- Shape Key 5: Waist Expand (Thicker core) ---
-    def morph_waist_expand(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.49 < t < 0.65:
-            w = gaussian(t, 0.57, 0.045)
-            dx += 0.036 * math.copysign(w, x)
-            dy += 0.018 * math.copysign(w, y)
-        return dx, dy, dz
-
-    # --- Shape Key 6: Chest / Breast Expansion ---
-    def morph_chest_expand(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.64 < t < 0.80 and y > 0.0 and abs(x) < 0.24:
-            w = gaussian(t, 0.72, 0.048) * gaussian(abs(x), 0.10, 0.06)
-            dy += (0.052 if not is_male else 0.038) * w
-            dx += 0.012 * math.copysign(w, x)
-        return dx, dy, dz
-
-    # --- Shape Key 7: Chest / Breast Reduction ---
-    def morph_chest_reduce(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.64 < t < 0.80 and y > 0.0 and abs(x) < 0.24:
-            w = gaussian(t, 0.72, 0.048) * gaussian(abs(x), 0.10, 0.06)
-            dy -= (0.032 if not is_male else 0.020) * w
-            dx -= 0.008 * math.copysign(w, x)
-        return dx, dy, dz
-
-    # --- Shape Key 8: Ribcage / Bust Girth Expansion ---
-    def morph_bust_girth(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.60 < t < 0.76:
-            w = gaussian(t, 0.68, 0.05)
-            dx += 0.024 * math.copysign(w, x)
-            dy += 0.018 * math.copysign(w, y)
-        return dx, dy, dz
-
-    # --- Shape Key 9: Shoulder Breadth Expansion (Deltoids) ---
-    def morph_shoulders_wide(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.73 < t < 0.86 and abs(x) > 0.13:
-            w = gaussian(t, 0.79, 0.04)
-            dx += 0.042 * math.copysign(w, x)
-        return dx, dy, dz
-
-    # --- Shape Key 10: Shoulder Breadth Reduction ---
-    def morph_shoulders_narrow(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.73 < t < 0.86 and abs(x) > 0.13:
-            w = gaussian(t, 0.79, 0.04)
-            dx -= 0.032 * math.copysign(w, x)
-        return dx, dy, dz
-
-    # --- Shape Key 11: Gluteal & Hip Volume Expansion ---
-    def morph_glutes_full(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.42 < t < 0.56:
-            w = gaussian(t, 0.49, 0.045)
-            # Pelvic width
-            dx += 0.028 * math.copysign(w, x)
-            # Posterior glute projection
-            if y < -0.01 and abs(x) < 0.20:
-                dy -= 0.040 * w * gaussian(abs(x), 0.10, 0.05)
-        return dx, dy, dz
-
-    # --- Shape Key 12: Gluteal & Hip Reduction ---
-    def morph_glutes_slim(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.42 < t < 0.56:
-            w = gaussian(t, 0.49, 0.045)
-            dx -= 0.024 * math.copysign(w, x)
-            if y < -0.01:
-                dy += 0.026 * w
-        return dx, dy, dz
-
-    # --- Shape Key 13: Thigh Muscular Flare (Quads / Adductors) ---
-    def morph_quads_muscular(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.26 < t < 0.48 and 0.05 < abs(x) < 0.20:
-            w = gaussian(t, 0.38, 0.06)
-            dx += 0.030 * math.copysign(w, x)
-            if y > 0.0:
-                dy += 0.020 * w
-        return dx, dy, dz
-
-    # --- Shape Key 14: Thigh Slim ---
-    def morph_quads_slim(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.26 < t < 0.48 and 0.05 < abs(x) < 0.20:
-            w = gaussian(t, 0.38, 0.06)
-            dx -= 0.024 * math.copysign(w, x)
-            if y > 0.0:
-                dy -= 0.016 * w
-        return dx, dy, dz
-
-    # --- Shape Key 15: Arm Girth Muscular (Biceps / Triceps) ---
-    def morph_arms_muscular(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.52 < t < 0.75 and abs(x) > 0.20:
-            w = gaussian(t, 0.63, 0.06)
-            dx += 0.024 * math.copysign(w, x)
-            dy += 0.020 * math.copysign(w, y)
-        return dx, dy, dz
-
-    # --- Shape Key 16: Arm Girth Slim ---
-    def morph_arms_slim(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.52 < t < 0.75 and abs(x) > 0.20:
-            w = gaussian(t, 0.63, 0.06)
-            dx -= 0.018 * math.copysign(w, x)
-            dy -= 0.014 * math.copysign(w, y)
-        return dx, dy, dz
-
-    # --- Shape Key 17: Calf Muscle Flare (Gastrocnemius) ---
-    def morph_calves_muscular(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.09 < t < 0.27 and 0.03 < abs(x) < 0.15:
-            w = gaussian(t, 0.18, 0.045)
-            dx += 0.020 * math.copysign(w, x)
-            if y < 0.0:
-                dy -= 0.018 * w
-        return dx, dy, dz
-
-    # --- Shape Key 18: Calf Slim ---
-    def morph_calves_slim(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.09 < t < 0.27 and 0.03 < abs(x) < 0.15:
-            w = gaussian(t, 0.18, 0.045)
-            dx -= 0.016 * math.copysign(w, x)
-            if y < 0.0:
-                dy += 0.014 * w
-        return dx, dy, dz
-
-    # --- Shape Key 19: Neck & Trapezius Thickness ---
-    def morph_neck_muscular(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.76 < t < 0.88 and abs(x) < 0.14:
-            w = gaussian(t, 0.82, 0.035)
-            dx += 0.018 * math.copysign(w, x)
-            dy += 0.014 * math.copysign(w, y)
-        return dx, dy, dz
-
-    # --- Shape Key 20: Neck Slim ---
-    def morph_neck_slim(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.76 < t < 0.88 and abs(x) < 0.14:
-            w = gaussian(t, 0.82, 0.035)
-            dx -= 0.014 * math.copysign(w, x)
-            dy -= 0.010 * math.copysign(w, y)
-        return dx, dy, dz
-
-    # --- Shape Key 21: Stomach Tone (Lean core cinch) ---
-    def morph_stomach_tone(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.49 < t < 0.65 and y > 0.0 and abs(x) < 0.12:
-            w = gaussian(t, 0.56, 0.045)
-            dy -= 0.024 * w
-        return dx, dy, dz
-
-    # --- Shape Key 22: Stomach Full (Adipose pouch) ---
-    def morph_stomach_full(x, y, z, t):
-        dx, dy, dz = 0.0, 0.0, 0.0
-        if 0.49 < t < 0.65 and y > 0.0 and abs(x) < 0.12:
-            w = gaussian(t, 0.56, 0.045)
-            dy += 0.038 * w
-        return dx, dy, dz
-
-    # Bake all shape keys
-    add_morph('Muscle', morph_muscle)
-    add_morph('Weight_More', morph_weight_more)
-    add_morph('Weight_Less', morph_weight_less)
-    add_morph('Waist_Cinch', morph_waist_cinch)
-    add_morph('Waist_Expand', morph_waist_expand)
-    add_morph('Chest', morph_chest_expand)
-    add_morph('Chest_Expand', morph_chest_expand)
-    add_morph('Chest_Reduce', morph_chest_reduce)
-    add_morph('Bust_Girth', morph_bust_girth)
-    add_morph('Shoulders', morph_shoulders_wide)
-    add_morph('Shoulders_Wide', morph_shoulders_wide)
-    add_morph('Shoulders_Narrow', morph_shoulders_narrow)
-    add_morph('Glutes', morph_glutes_full)
-    add_morph('Glutes_Full', morph_glutes_full)
-    add_morph('Glutes_Slim', morph_glutes_slim)
-    add_morph('Quads', morph_quads_muscular)
-    add_morph('Thighs_Muscular', morph_quads_muscular)
-    add_morph('Thighs_Slim', morph_quads_slim)
-    add_morph('Arms', morph_arms_muscular)
-    add_morph('Arms_Muscular', morph_arms_muscular)
-    add_morph('Arms_Slim', morph_arms_slim)
-    add_morph('Calves_Muscular', morph_calves_muscular)
-    add_morph('Calves_Slim', morph_calves_slim)
-    add_morph('Neck_Muscular', morph_neck_muscular)
-    add_morph('Neck_Slim', morph_neck_slim)
-    add_morph('Stomach_Tone', morph_stomach_tone)
-    add_morph('Stomach_Full', morph_stomach_full)
+    if is_male:
+        load_t('macrodetails/universal-male-young-maxmuscle-averageweight.target.gz', 'Muscle')
+        load_t('macrodetails/universal-male-young-averagemuscle-maxweight.target.gz', 'Weight_More')
+        load_t('macrodetails/universal-male-young-averagemuscle-minweight.target.gz', 'Weight_Less')
+    else:
+        load_t('macrodetails/universal-female-young-maxmuscle-averageweight.target.gz', 'Muscle')
+        load_t('macrodetails/universal-female-young-averagemuscle-maxweight.target.gz', 'Weight_More')
+        load_t('macrodetails/universal-female-young-averagemuscle-minweight.target.gz', 'Weight_Less')
 
     # 6. Ensure smooth normals & ZERO initial weights for all shape keys
     for poly in human.data.polygons:
@@ -366,6 +121,7 @@ def create_and_export_model(gender_type: str, output_path: str):
     if human.data.shape_keys:
         for block in human.data.shape_keys.key_blocks:
             block.value = 0.0
+            print(f"  + Shape Key ready: '{block.name}' (weight: {block.value})")
 
     # 7. Select Human mesh and export to glTF
     bpy.ops.object.select_all(action='DESELECT')
@@ -379,9 +135,9 @@ def create_and_export_model(gender_type: str, output_path: str):
         filepath=output_path,
         export_format='GLB',
         use_selection=True,
-        export_apply=False,                 # Must be False to preserve shape keys
-        export_morph=True,                  # Export shape keys / morph targets
-        export_morph_normal=False,          # Normal morphs can inflate size
+        export_apply=False,
+        export_morph=True,
+        export_morph_normal=False,
         export_draco_mesh_compression_enable=True,
         export_draco_mesh_compression_level=7,
         export_draco_position_quantization=14,

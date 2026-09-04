@@ -171,93 +171,85 @@ export function computeGLBMorphInfluences(
   const chestVal = isMale
     ? (morphValues['Chest'] ?? morphValues['Breast'])
     : (morphValues['Breast'] ?? morphValues['Chest']);
-  const neutralChest = isMale ? 96 : 88;
+  const neutralChest = isMale ? 98 : 88;
   mapBidirectional(
     chestVal,
     neutralChest,
-    75,
-    115,
+    78,
+    125,
     'Chest_Expand',
     'Chest_Reduce'
   );
-  // Also set legacy 'Chest' alias to expand
-  if (chestVal !== undefined && chestVal > neutralChest) {
-    setInfluence('Chest', (chestVal - neutralChest) / (115 - neutralChest));
+
+  // Female Bust volume
+  if (!isMale) {
+    const breastVal = morphValues['Breast'];
+    if (breastVal !== undefined) {
+      mapBidirectional(breastVal, 85, 65, 110, 'Bust_Expand', 'Bust_Reduce');
+    }
   }
 
   // 5. Bust Girth (Ribcage circumference)
   const bustGirthVal = morphValues['Bust Girth'];
   if (bustGirthVal !== undefined) {
-    const neutralBust = 70;
+    const neutralBust = isMale ? 86 : 68;
     setInfluence('Bust_Girth', THREE.MathUtils.clamp((bustGirthVal - neutralBust) / 25, 0, 1));
   }
 
   // 6. Shoulders (Shoulders_Wide vs Shoulders_Narrow)
-  const neutralShoulder = 13.5;
+  const neutralShoulder = isMale ? 14.2 : 13.8;
   mapBidirectional(
     morphValues['Shoulders'],
     neutralShoulder,
-    10,
+    11,
     18,
     'Shoulders_Wide',
     'Shoulders_Narrow'
   );
-  if (morphValues['Shoulders'] !== undefined && morphValues['Shoulders'] > neutralShoulder) {
-    setInfluence('Shoulders', (morphValues['Shoulders'] - neutralShoulder) / (18 - neutralShoulder));
-  }
 
   // 7. Glutes & Hips (Glutes_Full vs Glutes_Slim)
   const hipVal = morphValues['Hip Girth'] ?? morphValues['Glutes'];
-  const neutralHips = isMale ? 94 : 98;
+  const neutralHips = isMale ? 96 : 98;
   mapBidirectional(
     hipVal,
     neutralHips,
-    80,
-    125,
+    82,
+    118,
     'Glutes_Full',
     'Glutes_Slim'
   );
-  if (hipVal !== undefined && hipVal > neutralHips) {
-    setInfluence('Glutes', (hipVal - neutralHips) / (125 - neutralHips));
-  }
 
   // 8. Quads & Thighs (Thighs_Muscular vs Thighs_Slim)
   const thighVal = morphValues['Thigh Girth'] ?? morphValues['Quads'];
-  const neutralThigh = isMale ? 54 : 56;
+  const neutralThigh = isMale ? 56 : 56;
   mapBidirectional(
     thighVal,
     neutralThigh,
-    45,
-    70,
+    44,
+    72,
     'Thighs_Muscular',
     'Thighs_Slim'
   );
-  if (thighVal !== undefined && thighVal > neutralThigh) {
-    setInfluence('Quads', (thighVal - neutralThigh) / (70 - neutralThigh));
-  }
 
   // 9. Arms (Arms_Muscular vs Arms_Slim)
   const armVal = morphValues['Upper Arm Girth'] ?? morphValues['Arms'];
-  const neutralArm = isMale ? 30 : 26;
+  const neutralArm = isMale ? 31 : 26;
   mapBidirectional(
     armVal,
     neutralArm,
-    20,
-    38,
+    22,
+    42,
     'Arms_Muscular',
     'Arms_Slim'
   );
-  if (armVal !== undefined && armVal > neutralArm) {
-    setInfluence('Arms', (armVal - neutralArm) / (38 - neutralArm));
-  }
 
   // 10. Calves (Calves_Muscular vs Calves_Slim)
   const calfVal = morphValues['Calf Girth'] ?? morphValues['Calf'];
-  const neutralCalf = 36;
+  const neutralCalf = isMale ? 37.5 : 36;
   mapBidirectional(
     calfVal,
     neutralCalf,
-    28,
+    30,
     48,
     'Calves_Muscular',
     'Calves_Slim'
@@ -265,12 +257,12 @@ export function computeGLBMorphInfluences(
 
   // 11. Neck (Neck_Muscular vs Neck_Slim)
   const neckVal = morphValues['Neck'];
-  const neutralNeck = isMale ? 37 : 32;
+  const neutralNeck = isMale ? 37 : 31;
   mapBidirectional(
     neckVal,
     neutralNeck,
-    25,
-    45,
+    28,
+    46,
     'Neck_Muscular',
     'Neck_Slim'
   );

@@ -230,7 +230,7 @@ function BodyMesh({
   const normalScale = useMemo(() => calculateDynamicNormalScale(bodyFat), [bodyFat]);
 
   const isFemale = config.character.includes('female');
-  const baseHeight = isFemale ? 1.601 : 1.858;
+  const baseHeight = isFemale ? 1.631 : 1.702;
 
   // Derive active mesh geometry and attach vertex colors for heatmap mode in useMemo
   const meshGeometry = useMemo(() => {
@@ -461,7 +461,7 @@ function BodyMesh({
 
   // Dynamic height scaling anchored at grounded feet (Y = 0)
   const targetHeightCm = morphValues['Height'] ?? (isFemale ? 165 : 178);
-  const baseHeightCm = isFemale ? 160.1 : 185.8;
+  const baseHeightCm = isFemale ? 163.1 : 170.2;
   const heightScaleY = THREE.MathUtils.clamp(targetHeightCm / baseHeightCm, 0.75, 1.35);
   // Human anthropometric scaling: transverse cross-section scales at square root of stature
   const scaleXZ = Math.sqrt(heightScaleY);

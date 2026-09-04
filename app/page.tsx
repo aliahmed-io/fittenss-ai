@@ -176,9 +176,9 @@ export default function Home() {
     }
     const mc = {
       morphs: ['Height','Chest','Neck','Neck Height','Shoulders',"Shoulder's Slope",'Bust Girth','Stomach Form','Waist','Arm Length','Upper Arm Girth','Wrist','Hip Girth','Hip Height','Thigh Girth','Lower Leg Length','Calf'],
-      morphslowlimit: [120,83.76,32,9.36,11.3,0,81,0,64,21,12,12,96,29,30,29,49],
-      morphshighlimit: [220,130.56,40,16,16,2,97,2,100,32,20,20,124,46,63,46,61],
-      morphslimit: [178,96.67,37,12.36,13.07,1,86,1,76.66,26,15,16,112,36,42,38,55],
+      morphslowlimit: [120,80,32,9.36,11.5,0,78,0,65,21,22,12,82,29,44,29,30],
+      morphshighlimit: [220,130,42,16,17,2,98,2,105,32,42,20,118,46,72,46,48],
+      morphslimit: [178,98,37,12.36,14.2,1,86,0.8,78,26,31,16,96,36,56,38,37.5],
     };
     const i = mc.morphs.indexOf(name);
     if (i !== -1) return { min: mc.morphslowlimit[i]!, max: mc.morphshighlimit[i]!, default: mc.morphslimit[i]! };
