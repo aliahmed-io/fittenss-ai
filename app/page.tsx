@@ -21,7 +21,7 @@ import {
 } from '@/lib/bodyModel/anthropometry';
 import { WORKOUT_STRAIN_PRESETS } from '@/lib/bodyModel/muscleHeatmap';
 import PhotoScanModal from '@/components/PhotoScanModal';
-import { Sparkles, Eye, Layers, RotateCcw, Camera, Flame, Check, ArrowUpRight, Plus, Minus } from 'lucide-react';
+import { Sparkles, Eye, Layers, RotateCcw, Camera, Flame, Check, ArrowUpRight, Plus, Minus, Activity } from 'lucide-react';
 
 interface MorphConfig {
   [key: string]: number;
@@ -31,6 +31,7 @@ export default function Home() {
   const [gender, setGender] = useState<Gender>('female');
   const [cameraView, setCameraView] = useState<CameraViewPreset>('full');
   const [materialMode, setMaterialMode] = useState<MaterialMode>('hologram');
+  const [activePose, setActivePose] = useState<string>('neutral');
   const [showWireframe, setShowWireframe] = useState<boolean>(false);
   const [isPhotoScanOpen, setIsPhotoScanOpen] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -141,6 +142,7 @@ export default function Home() {
 
   const morphLabels: Record<string, string> = {
     Height: 'Height Scale',
+    Muscle: 'Overall Muscle Hypertrophy',
     Chest: gender === 'male' ? 'Chest / Pectorals' : 'Chest Girth',
     Neck: 'Neck Girth',
     'Neck Height': 'Neck Length',
@@ -187,8 +189,8 @@ export default function Home() {
 
   const activeMorphs =
     gender === 'female'
-      ? ['Height','Breast','Bust Girth','Waist','Hip Girth','Thigh Girth','Calf Girth','Stomach Form','Shoulders','Upper Arm Girth','Neck','lower Leg','Arm Length']
-      : ['Height','Chest','Bust Girth','Waist','Hip Girth','Thigh Girth','Calf','Stomach Form','Shoulders','Upper Arm Girth','Neck','Lower Leg Length','Arm Length'];
+      ? ['Height','Muscle','Breast','Bust Girth','Waist','Hip Girth','Thigh Girth','Calf Girth','Stomach Form','Shoulders','Upper Arm Girth','Neck','lower Leg','Arm Length']
+      : ['Height','Muscle','Chest','Bust Girth','Waist','Hip Girth','Thigh Girth','Calf','Stomach Form','Shoulders','Upper Arm Girth','Neck','Lower Leg Length','Arm Length'];
 
   const stats = [
     { label: 'Body Weight', sublabel: 'KG', value: userInputs.weight, lime: false },
@@ -340,7 +342,7 @@ export default function Home() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               {/* Material mode selector */}
               <div style={{ display: 'flex', gap: '2px', background: 'var(--ft-surface)', padding: '2px', border: '1px solid var(--ft-rule)' }}>
-                {(['hologram', 'sculpt', 'athletic', 'heatmap'] as const).map((m) => (
+                {(['hologram', 'pbr', 'sculpt', 'athletic', 'heatmap'] as const).map((m) => (
                   <button
                     key={m}
                     onClick={() => setMaterialMode(m)}
@@ -358,6 +360,11 @@ export default function Home() {
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                         <Sparkles style={{ width: '10px', height: '10px' }} />
                         Hologram
+                      </span>
+                    ) : m === 'pbr' ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                        <Layers style={{ width: '10px', height: '10px' }} />
+                        PBR Studio
                       </span>
                     ) : m === 'heatmap' ? (
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
@@ -445,6 +452,46 @@ export default function Home() {
               aria-hidden="true"
             />
 
+            {/* Pose Action Selector (Floating at top-left of viewport) */}
+            <div
+              style={{
+                position: 'absolute',
+                top: '16px',
+                left: '20px',
+                zIndex: 10,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                background: 'rgba(15,15,15,0.85)',
+                backdropFilter: 'blur(8px)',
+                padding: '4px',
+                border: '1px solid var(--ft-rule)',
+              }}
+            >
+              <span style={{ fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ft-t3)', padding: '0 6px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                <Activity style={{ width: '10px', height: '10px', color: 'var(--ft-lime)' }} />
+                Pose
+              </span>
+              {(
+                [
+                  { id: 'neutral', label: 'Neutral' },
+                  { id: 'double_biceps', label: 'Biceps Flex' },
+                  { id: 'lat_spread', label: 'Lat Spread' },
+                  { id: 'squat_deep', label: 'Squat' },
+                  { id: 'deadlift_hinge', label: 'Deadlift' },
+                ] as const
+              ).map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setActivePose(p.id)}
+                  className={activePose === p.id ? 'btn-lime' : 'btn-ghost'}
+                  style={{ padding: '4px 8px', fontSize: '9px' }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
             {/* Model Badge */}
             <p
               style={{
@@ -530,6 +577,7 @@ export default function Home() {
               showWireframe={showWireframe}
               bodyFat={Number(userInputs.bodyFat) || (gender === 'female' ? 22 : 15)}
               muscleFatigue={activeFatigue}
+              activePose={activePose}
             />
           </div>
         </div>

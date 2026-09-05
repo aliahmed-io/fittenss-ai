@@ -31,6 +31,9 @@ export interface ProcessedModelResult {
   morphMap: Map<string, number>;
   baseScale: number;
   heightOffset: number;
+  skinnedMesh?: THREE.SkinnedMesh;
+  skeleton?: THREE.Skeleton;
+  scene?: THREE.Group;
 }
 
 // Global cache for processed models to prevent repeated parsing and memory churn

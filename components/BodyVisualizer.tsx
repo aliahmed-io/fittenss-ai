@@ -6,18 +6,17 @@ import { OrbitControls, Environment, ContactShadows } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
 import {
-  buildParametricBodyGeometry,
   BodyModelConfig,
-  RawModelJson,
   ProcessedModelResult,
 } from '@/lib/bodyModel/morphEngine';
 
-import { getProceduralMuscleNormalMap, calculateDynamicNormalScale } from '@/lib/bodyModel/normalShaderEngine';
 import { generateMuscleHeatmapColors, MuscleFatigueState, WORKOUT_STRAIN_PRESETS } from '@/lib/bodyModel/muscleHeatmap';
 import { loadGlbHumanModel, computeGLBMorphInfluences } from '@/lib/bodyModel/glbModelLoader';
+import { createDynamicBodyMaterial, updateDynamicBodyMaterial } from '@/lib/bodyModel/dynamicPbrShader';
+import { PoseController } from '@/lib/bodyModel/poseSystem';
 
 export type CameraViewPreset = 'full' | 'torso' | 'lower' | 'profile' | 'back';
-export type MaterialMode = 'hologram' | 'sculpt' | 'athletic' | 'wireframe' | 'heatmap';
+export type MaterialMode = 'hologram' | 'pbr' | 'sculpt' | 'athletic' | 'wireframe' | 'heatmap';
 
 export interface BodyVisualizerProps {
   gender?: 'male' | 'female' | 'child';
@@ -27,6 +26,7 @@ export interface BodyVisualizerProps {
   showWireframe?: boolean;
   bodyFat?: number;
   muscleFatigue?: MuscleFatigueState;
+  activePose?: string;
 }
 
 const CAMERA_POSITIONS: Record<CameraViewPreset, { pos: [number, number, number]; target: [number, number, number] }> = {
@@ -37,21 +37,15 @@ const CAMERA_POSITIONS: Record<CameraViewPreset, { pos: [number, number, number]
   back:    { pos: [0, 1.10, -3.45], target: [0, 1.10, 0] },
 };
 
-/**
- * Animated camera controller that smoothly glides to selected view presets,
- * then yields 100% control to OrbitControls for uninterrupted mouse wheel zoom, rotation, and pan.
- */
 function CameraController({ view }: { view: CameraViewPreset }) {
   const controlsRef = useRef<OrbitControlsImpl>(null);
   const target = CAMERA_POSITIONS[view] ?? CAMERA_POSITIONS.full;
   const isTransitioningRef = useRef(false);
 
-  // Trigger smooth glide only when preset changes
   useEffect(() => {
     isTransitioningRef.current = true;
   }, [view]);
 
-  // When user interacts with OrbitControls (wheel scroll, drag, touch), instantly stop programmatic override
   useEffect(() => {
     const controls = controlsRef.current;
     if (!controls) return;
@@ -60,22 +54,30 @@ function CameraController({ view }: { view: CameraViewPreset }) {
       isTransitioningRef.current = false;
     };
 
-    controls.addEventListener('start', stopTransition);
+    const domElement = controls.domElement;
+    if (!domElement) return;
+
+    domElement.addEventListener('pointerdown', stopTransition);
+    domElement.addEventListener('wheel', stopTransition);
+    domElement.addEventListener('touchstart', stopTransition);
+
     return () => {
-      controls.removeEventListener('start', stopTransition);
+      domElement.removeEventListener('pointerdown', stopTransition);
+      domElement.removeEventListener('wheel', stopTransition);
+      domElement.removeEventListener('touchstart', stopTransition);
     };
   }, []);
 
-  // Listen for toolbar Zoom In / Zoom Out button clicks
   useEffect(() => {
     const handleZoom = (e: Event) => {
-      const customEvent = e as CustomEvent<{ delta: number }>;
-      const delta = customEvent.detail?.delta ?? 0;
+      const customEvt = e as CustomEvent<{ delta: number }>;
+      const delta = customEvt.detail?.delta ?? 0;
       const controls = controlsRef.current;
       if (!controls) return;
 
-      isTransitioningRef.current = false;
-      const cam = controls.object;
+      const cam = controls.object as THREE.PerspectiveCamera;
+      if (!cam) return;
+
       const targetLookAt = controls.target;
       const offset = cam.position.clone().sub(targetLookAt);
       const factor = delta > 0 ? 0.75 : 1.33;
@@ -110,7 +112,6 @@ function CameraController({ view }: { view: CameraViewPreset }) {
       controlsRef.current.update();
     }
 
-    // Stop transitioning once arrived within close threshold
     const distSq =
       Math.pow(cam.position.x - targetPos[0], 2) +
       Math.pow(cam.position.y - targetPos[1], 2) +
@@ -150,23 +151,19 @@ function CameraController({ view }: { view: CameraViewPreset }) {
   );
 }
 
-/**
- * Renders the circular scanner pedestal with subtle concentric rings and technical scanline.
- */
 function ScannerPedestal({ isHologram = false }: { isHologram?: boolean }) {
   const ringRef = useRef<THREE.Group>(null);
   const accentColor = isHologram ? '#00F0FF' : '#CBFF00';
 
   useFrame((_, delta) => {
     if (ringRef.current) {
-      ringRef.current.rotation.y += delta * 0.15; // Slow rotation of technical markings
+      ringRef.current.rotation.z += delta * 0.25;
     }
   });
 
   return (
-    <group position={[0, -0.001, 0]}>
-      {/* Base disc */}
-      <mesh receiveShadow rotation={[-Math.PI * 0.5, 0, 0]}>
+    <group position={[0, 0, 0]}>
+      <mesh rotation={[-Math.PI * 0.5, 0, 0]} position={[0, -0.002, 0]} receiveShadow>
         <circleGeometry args={[0.9, 64]} />
         <meshStandardMaterial
           color="#0a0a0a"
@@ -175,19 +172,15 @@ function ScannerPedestal({ isHologram = false }: { isHologram?: boolean }) {
         />
       </mesh>
 
-      {/* Rotating concentric technical rings */}
       <group ref={ringRef} rotation={[-Math.PI * 0.5, 0, 0]}>
-        {/* Outer perimeter ring */}
         <mesh position={[0, 0, 0.001]}>
           <ringGeometry args={[0.86, 0.865, 64]} />
           <meshBasicMaterial color="#333333" />
         </mesh>
-        {/* Inner metric ring */}
         <mesh position={[0, 0, 0.001]}>
           <ringGeometry args={[0.55, 0.553, 48]} />
           <meshBasicMaterial color="#222222" />
         </mesh>
-        {/* Accent tick marks */}
         <mesh position={[0, 0, 0.001]}>
           <ringGeometry args={[0.88, 0.885, 32, 1, 0, Math.PI * 0.35]} />
           <meshBasicMaterial color={accentColor} transparent opacity={0.6} />
@@ -201,17 +194,15 @@ function ScannerPedestal({ isHologram = false }: { isHologram?: boolean }) {
   );
 }
 
-/**
- * 3D parametric human body mesh component with GPU morph interpolation.
- */
 function BodyMesh({
   processedModel,
   config,
   morphValues,
   materialMode,
   showWireframe,
-  bodyFat = 20,
+  bodyFat = 15,
   muscleFatigue,
+  activePose = 'neutral',
 }: {
   processedModel: ProcessedModelResult;
   config: BodyModelConfig;
@@ -220,149 +211,33 @@ function BodyMesh({
   showWireframe: boolean;
   bodyFat?: number;
   muscleFatigue?: MuscleFatigueState;
+  activePose?: string;
 }) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const wireframeRef = useRef<THREE.Mesh>(null);
   const targetInfluencesRef = useRef<number[]>([]);
-
-  // Procedural normal map and dynamic striations based on body fat
-  const normalMap = useMemo(() => getProceduralMuscleNormalMap(), []);
-  const normalScale = useMemo(() => calculateDynamicNormalScale(bodyFat), [bodyFat]);
-
+  const meshRef = useRef<THREE.SkinnedMesh | null>(null);
   const isFemale = config.character.includes('female');
   const baseHeight = isFemale ? 1.631 : 1.702;
 
-  // Derive active mesh geometry and attach vertex colors for heatmap mode in useMemo
-  const meshGeometry = useMemo(() => {
-    const geom = processedModel.geometry.clone();
-    if (materialMode === 'heatmap') {
-      const positions = geom.attributes.position!.array as Float32Array;
-      const count = geom.attributes.position!.count;
-      const activeFatigue = muscleFatigue ?? WORKOUT_STRAIN_PRESETS[0]!.fatigue;
-      const colors = generateMuscleHeatmapColors(positions, count, baseHeight, activeFatigue, true);
-      geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    }
-    return geom;
-  }, [processedModel, materialMode, muscleFatigue, baseHeight]);
+  // Pose Controller for procedural animations
+  const poseController = useMemo(() => new PoseController(), []);
 
-  // Ensure morphTargetInfluences are initialized on both meshes immediately
   useEffect(() => {
-    if (meshRef.current) {
-      meshRef.current.updateMorphTargets();
+    meshRef.current = processedModel.skinnedMesh ?? null;
+    if (processedModel.skeleton) {
+      poseController.setSkeleton(processedModel.skeleton);
     }
-    if (wireframeRef.current) {
-      wireframeRef.current.updateMorphTargets();
-    }
-  }, [meshGeometry]);
+  }, [processedModel, poseController]);
 
-  // Calculate target morph influences based on config limits
   useEffect(() => {
-    const morphMap = processedModel.morphMap;
+    poseController.setPose(activePose);
+  }, [activePose, poseController]);
 
-    // Check if this is our modern GLB model (has baked shape keys like 'Waist_Cinch' or 'Muscle')
-    if (morphMap.has('Muscle') || morphMap.has('Waist_Cinch')) {
-      const isFemale = config.character.includes('female');
-      const influences = computeGLBMorphInfluences(
-        isFemale ? 'female' : 'male',
-        morphMap,
-        morphValues,
-        bodyFat
-      );
-      targetInfluencesRef.current = influences;
-      return;
-    }
-
-    // Legacy JSON fallback
-    const influences: number[] = [];
-    config.morphs.forEach((name, i) => {
-      const morphIndex = morphMap.get(name);
-      if (morphIndex !== undefined) {
-        const val = morphValues[name] ?? config.morphslimit[i] ?? 50;
-        const low = config.morphslowlimit[i] ?? 0;
-        const high = config.morphshighlimit[i] ?? 100;
-        const range = Math.max(0.0001, high - low);
-        // Normalized 0 to 1 influence
-        const norm = THREE.MathUtils.clamp((val - low) / range, 0, 1);
-        influences[morphIndex] = norm;
-      }
-    });
-
-    targetInfluencesRef.current = influences;
-  }, [config, morphValues, processedModel, bodyFat]);
-
-  // Material setup matching brand design tokens
+  // Primary material setup
   const primaryMaterial = useMemo(() => {
-    if (materialMode === 'hologram') {
-      // High-End Sci-Fi Biometric Blue Hologram Shader
-      return new THREE.ShaderMaterial({
-        uniforms: {
-          uTime: { value: 0 },
-          uColor: { value: new THREE.Color('#021428') },
-          uGlowColor: { value: new THREE.Color('#0077B6') },
-          uRimColor: { value: new THREE.Color('#00F0FF') },
-        },
-        vertexShader: `
-          #include <morphtarget_pars_vertex>
-          varying vec3 vNormal;
-          varying vec3 vViewPosition;
-          varying vec3 vWorldPosition;
-
-          void main() {
-            #include <begin_vertex>
-            #include <morphtarget_vertex>
-            #include <project_vertex>
-
-            vNormal = normalize(normalMatrix * normal);
-            vViewPosition = -mvPosition.xyz;
-            vWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
-          }
-        `,
-        fragmentShader: `
-          uniform vec3 uColor;
-          uniform vec3 uGlowColor;
-          uniform vec3 uRimColor;
-          uniform float uTime;
-
-          varying vec3 vNormal;
-          varying vec3 vViewPosition;
-          varying vec3 vWorldPosition;
-
-          void main() {
-            vec3 normal = normalize(vNormal);
-            vec3 viewDir = normalize(vViewPosition);
-
-            // Fresnel edge grazing falloff (highlights anatomical perimeter)
-            float fresnel = pow(1.0 - max(0.0, dot(normal, viewDir)), 2.6);
-            float innerGlow = pow(1.0 - max(0.0, dot(normal, viewDir)), 1.4);
-
-            // Key anatomical light to accentuate muscle relief (pecs, abs, delts)
-            vec3 lightDir = normalize(vec3(0.15, 0.4, 0.85));
-            float diff = max(0.0, dot(normal, lightDir));
-            float muscleRelief = pow(diff, 1.6) * 0.55;
-
-            // Scanning laser biometric beam passing vertically
-            float beamDist = abs(fract(vWorldPosition.y * 0.55 - uTime * 0.22) - 0.5) * 1.8;
-            float scanBeam = smoothstep(0.08, 0.0, beamDist) * 0.45;
-
-            // Animated subtle scanlines
-            float scanline = 0.90 + 0.10 * sin(vWorldPosition.y * 140.0 - uTime * 2.5);
-
-            // Subtle topographic elevation contour
-            float topo = 0.94 + 0.06 * sin(vWorldPosition.y * 80.0);
-
-            // Holographic color composite
-            vec3 col = mix(uColor, uGlowColor, innerGlow * 0.60 + muscleRelief);
-            col = mix(col, uRimColor, fresnel * 0.85 + scanBeam);
-            col *= (scanline * topo);
-
-            float alpha = clamp(0.78 + fresnel * 0.22, 0.0, 1.0);
-            gl_FragColor = vec4(col, alpha);
-          }
-        `,
-        transparent: true,
-        depthWrite: true,
-        side: THREE.FrontSide,
-      });
+    if (materialMode === 'pbr' || materialMode === 'hologram') {
+      const mat = createDynamicBodyMaterial({ isHologram: materialMode === 'hologram' });
+      mat.wireframe = showWireframe;
+      return mat;
     }
 
     if (materialMode === 'heatmap') {
@@ -370,138 +245,136 @@ function BodyMesh({
         vertexColors: true,
         roughness: 0.45,
         metalness: 0.08,
-        normalMap: normalMap ?? undefined,
-        normalScale,
-        flatShading: false,
+        wireframe: showWireframe,
       });
     }
 
     if (materialMode === 'sculpt') {
-      // Editorial matte alabaster sculpt with dynamic micro-striation normal map
       return new THREE.MeshStandardMaterial({
         color: '#D8D4CC',
         roughness: 0.54,
         metalness: 0.02,
-        normalMap: normalMap ?? undefined,
-        normalScale,
-        flatShading: false,
+        wireframe: showWireframe,
       });
     }
 
     if (materialMode === 'athletic') {
-      // Athletic obsidian metallic with dynamic micro-striation normal map
       return new THREE.MeshStandardMaterial({
         color: '#151515',
         roughness: 0.32,
         metalness: 0.70,
-        normalMap: normalMap ?? undefined,
-        normalScale,
-        flatShading: false,
+        wireframe: showWireframe,
       });
     }
 
-    // Default wireframe mode
     return new THREE.MeshStandardMaterial({
       color: '#121212',
       roughness: 0.5,
       metalness: 0.2,
       wireframe: true,
     });
-  }, [materialMode, normalMap, normalScale]);
+  }, [materialMode, showWireframe]);
 
-  const wireframeMaterial = useMemo(() => {
-    if (materialMode === 'hologram') {
-      return new THREE.MeshBasicMaterial({
-        color: '#00F0FF',
-        wireframe: true,
-        transparent: true,
-        opacity: 0.15,
-      });
+  // Assign material to SkinnedMesh
+  useEffect(() => {
+    if (meshRef.current) {
+      meshRef.current.material = primaryMaterial;
     }
-    return new THREE.MeshBasicMaterial({
-      color: '#CBFF00',
-      wireframe: true,
-      transparent: true,
-      opacity: 0.12,
-    });
-  }, [materialMode]);
+  }, [primaryMaterial, processedModel]);
 
-  // Smooth frame-rate independent interpolation (damp) of morph influences on the GPU
-  useFrame((_, delta) => {
+  // Heatmap vertex colors update
+  useEffect(() => {
     const mesh = meshRef.current;
-    if (!mesh || !mesh.morphTargetInfluences) return;
+    if (mesh && materialMode === 'heatmap') {
+      const geom = mesh.geometry;
+      const positions = geom.attributes['position']?.array as Float32Array | undefined;
+      const count = geom.attributes['position']?.count ?? 0;
+      if (positions && count > 0) {
+        const activeFatigue = muscleFatigue ?? WORKOUT_STRAIN_PRESETS[0]!.fatigue;
+        const colors = generateMuscleHeatmapColors(positions, count, baseHeight, activeFatigue, true);
+        geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      }
+    }
+  }, [materialMode, muscleFatigue, baseHeight, processedModel]);
 
-    const targets = targetInfluencesRef.current;
-    for (let i = 0; i < targets.length; i++) {
-      const targetVal = targets[i];
-      if (targetVal !== undefined && mesh.morphTargetInfluences[i] !== undefined) {
-        mesh.morphTargetInfluences[i] = THREE.MathUtils.damp(
-          mesh.morphTargetInfluences[i]!,
-          targetVal,
-          10,
-          delta
-        );
+  // Calculate target morph influences
+  useEffect(() => {
+    const morphMap = processedModel.morphMap;
+    if (morphMap.has('Muscle') || morphMap.has('Waist_Cinch')) {
+      const influences = computeGLBMorphInfluences(
+        isFemale ? 'female' : 'male',
+        morphMap,
+        morphValues,
+        bodyFat
+      );
+      targetInfluencesRef.current = influences;
+    }
+  }, [isFemale, processedModel, morphValues, bodyFat]);
+
+  // Smooth frame updates: poses, morphs, shader uniforms
+  useFrame((_, delta) => {
+    poseController.update(delta);
+
+    const activeMesh = meshRef.current;
+    if (activeMesh?.morphTargetInfluences) {
+      const targets = targetInfluencesRef.current;
+      for (let i = 0; i < targets.length; i++) {
+        const targetVal = targets[i];
+        if (targetVal !== undefined && activeMesh.morphTargetInfluences[i] !== undefined) {
+          activeMesh.morphTargetInfluences[i] = THREE.MathUtils.damp(
+            activeMesh.morphTargetInfluences[i]!,
+            targetVal,
+            10,
+            delta
+          );
+        }
       }
     }
 
-    if (wireframeRef.current?.morphTargetInfluences && mesh.morphTargetInfluences) {
-      for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
-        wireframeRef.current.morphTargetInfluences[i] = mesh.morphTargetInfluences[i]!;
-      }
-    }
-
-    // Animate hologram scanlines via mesh material reference
-    if (mesh.material && (mesh.material as THREE.ShaderMaterial).uniforms?.['uTime']) {
-      const uTime = (mesh.material as THREE.ShaderMaterial).uniforms['uTime'];
-      if (uTime) {
-        uTime.value += delta;
+    if (activeMesh) {
+      const currentMat = activeMesh.material as THREE.Material;
+      if (materialMode === 'pbr' || materialMode === 'hologram') {
+        updateDynamicBodyMaterial(currentMat, {
+          bodyFat,
+          muscle: morphValues['Muscle'] ?? 50,
+          isHologram: materialMode === 'hologram',
+          deltaTime: delta,
+        });
       }
     }
   });
 
-  // Dynamic height scaling anchored at grounded feet (Y = 0)
   const targetHeightCm = morphValues['Height'] ?? (isFemale ? 165 : 178);
   const baseHeightCm = isFemale ? 163.1 : 170.2;
   const heightScaleY = THREE.MathUtils.clamp(targetHeightCm / baseHeightCm, 0.75, 1.35);
-  // Human anthropometric scaling: transverse cross-section scales at square root of stature
   const scaleXZ = Math.sqrt(heightScaleY);
 
-  return (
-    <group scale={[scaleXZ, heightScaleY, scaleXZ]} position={[0, 0, 0]}>
-      {/* Primary body mesh with constructor args to guarantee morphTargetInfluences initialization */}
-      <mesh
-        ref={meshRef}
-        args={[meshGeometry, primaryMaterial]}
-        castShadow
-        receiveShadow
-      />
+  if (processedModel.scene) {
+    return (
+      <group scale={[scaleXZ, heightScaleY, scaleXZ]} position={[0, 0, 0]}>
+        <primitive object={processedModel.scene} />
+      </group>
+    );
+  }
 
-      {/* Optional technical wireframe overlay */}
-      {(showWireframe || materialMode === 'wireframe') && (
-        <mesh
-          ref={wireframeRef}
-          args={[meshGeometry, wireframeMaterial]}
-        />
-      )}
-    </group>
-  );
+  return null;
 }
 
 export default function BodyVisualizer({
   gender = 'female',
   morphValues,
-  materialMode = 'sculpt',
+  materialMode = 'hologram',
   cameraView = 'full',
   showWireframe = false,
-  bodyFat = 20,
+  bodyFat = 15,
   muscleFatigue,
+  activePose = 'neutral',
 }: BodyVisualizerProps) {
   const [config, setConfig] = useState<BodyModelConfig | null>(null);
   const [processedModel, setProcessedModel] = useState<ProcessedModelResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Load configuration and model
   useEffect(() => {
     let isMounted = true;
 
@@ -510,136 +383,115 @@ export default function BodyVisualizer({
       setError(null);
       try {
         if (gender === 'male' || gender === 'female') {
-          try {
-            const { processed, config: glbConfig } = await loadGlbHumanModel(gender);
-            if (isMounted) {
-              setConfig(glbConfig);
-              setProcessedModel(processed);
-              setLoading(false);
-              return;
-            }
-          } catch (glbErr) {
-            console.warn('GLB load failed, falling back to legacy generator:', glbErr);
+          const { processed, config: glbConfig } = await loadGlbHumanModel(gender);
+          if (isMounted) {
+            setConfig(glbConfig);
+            setProcessedModel(processed);
+            setLoading(false);
           }
         }
-
-        let configPath = '/models/skinned/femaleconfig.json';
-        if (gender === 'male') configPath = '/models/skinned/testconfig.json';
-        if (gender === 'child') configPath = '/models/skinned/childconfig.json';
-
-        const configRes = await fetch(configPath);
-        if (!configRes.ok) throw new Error(`Failed to load config: ${configRes.status}`);
-        const configData: BodyModelConfig = await configRes.json();
-        configData.baseUrl = '/models/skinned/UCS/';
-
-        const modelRes = await fetch(`${configData.baseUrl}${configData.character}`);
-        if (!modelRes.ok) throw new Error(`Failed to load 3D character: ${modelRes.status}`);
-        const rawJson: RawModelJson = await modelRes.json();
-
-        const processed = buildParametricBodyGeometry(rawJson, configData, gender);
-
+      } catch (err: unknown) {
         if (isMounted) {
-          setConfig(configData);
-          setProcessedModel(processed);
-          setLoading(false);
-        }
-      } catch (err) {
-        if (isMounted) {
-          setError(err instanceof Error ? err.message : 'Error loading 3D model');
+          const msg = err instanceof Error ? err.message : 'Failed to load humanoid anatomical model';
+          setError(msg);
           setLoading(false);
         }
       }
     };
 
     load();
-
-    return () => {
-      isMounted = false;
-    };
+    return () => { isMounted = false; };
   }, [gender]);
 
   return (
-    <div className="relative w-full h-full min-h-[500px] select-none bg-[#090909]">
-      {/* Loading state */}
+    <div
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        background: 'radial-gradient(ellipse at 50% 60%, #0d1218 0%, #030608 100%)',
+        overflow: 'hidden',
+      }}
+    >
       {loading && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-[#090909]/90 backdrop-blur-sm">
-          <div className="w-8 h-8 rounded-full border-2 border-[var(--ft-lime)] border-t-transparent animate-spin" />
-          <p className="eyebrow text-xs tracking-widest text-[var(--ft-t2)]">
-            Synthesizing 3D Anatomical Scan...
-          </p>
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(3, 6, 8, 0.85)',
+            zIndex: 10,
+            backdropFilter: 'blur(8px)',
+          }}
+        >
+          <div style={{ textAlign: 'center' }}>
+            <div
+              style={{
+                width: '32px',
+                height: '32px',
+                border: '2px solid var(--ft-rule)',
+                borderTopColor: 'var(--ft-accent-cyan, #00F0FF)',
+                borderRadius: '50%',
+                animation: 'spin 0.8s linear infinite',
+                margin: '0 auto 12px',
+              }}
+            />
+            <div style={{ fontSize: '11px', letterSpacing: '0.1em', color: 'var(--ft-muted)' }}>
+              SYNCHRONIZING ANATOMICAL MESH
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Error state fallback */}
       {error && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 p-6 text-center bg-[#090909]">
-          <p className="text-red-400 font-mono text-xs uppercase tracking-wider">Model Synthesis Error</p>
-          <p className="text-xs text-[var(--ft-t3)]">{error}</p>
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10,
+            color: 'var(--ft-accent-crimson)',
+            fontSize: '12px',
+            background: 'rgba(3,6,8,0.9)',
+          }}
+        >
+          {error}
         </div>
       )}
 
       <Canvas
-        shadows
-        dpr={[1, 2]}
-        camera={{
-          position: CAMERA_POSITIONS.full.pos,
-          fov: 35,
-          near: 0.1,
-          far: 100,
+        camera={{ position: CAMERA_POSITIONS.full.pos, fov: 36, near: 0.1, far: 50 }}
+        gl={{
+          antialias: true,
+          toneMapping: THREE.ACESFilmicToneMapping,
+          toneMappingExposure: 1.15,
+          powerPreference: 'high-performance',
         }}
-        gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.15 }}
+        shadows
       >
-        <CameraController view={cameraView} />
+        <Suspense fallback={null}>
+          <CameraController view={cameraView} />
 
-        {/* Studio / Hologram Lighting */}
-        <ambientLight intensity={materialMode === 'hologram' ? 0.90 : 0.70} />
-        {/* Main Key Light */}
-        <directionalLight
-          position={[2.4, 3.0, 2.2]}
-          intensity={materialMode === 'hologram' ? 1.0 : 1.5}
-          castShadow
-          shadow-mapSize={[2048, 2048]}
-          shadow-bias={-0.0001}
-        />
-        {/* Fill Light */}
-        <directionalLight
-          position={[-2.2, 1.8, -1.5]}
-          intensity={0.65}
-          color={materialMode === 'hologram' ? '#00A3FF' : '#DDE8F0'}
-        />
-        {/* Technical Rim Light */}
-        <pointLight
-          position={[-1.8, 1.3, 1.8]}
-          intensity={materialMode === 'hologram' ? 2.2 : 1.2}
-          color={materialMode === 'hologram' ? '#00F0FF' : '#CBFF00'}
-          distance={7}
-        />
-        <pointLight
-          position={[1.5, 0.8, -1.8]}
-          intensity={materialMode === 'hologram' ? 1.8 : 0.6}
-          color={materialMode === 'hologram' ? '#0077FF' : '#FFFFFF'}
-          distance={6}
-        />
+          <ambientLight intensity={materialMode === 'hologram' ? 0.35 : 0.85} />
+          <directionalLight
+            position={[2, 4, 3]}
+            intensity={materialMode === 'hologram' ? 0.6 : 1.4}
+            castShadow
+            shadow-mapSize={[1024, 1024]}
+          />
+          <directionalLight
+            position={[-3, 2, -2]}
+            intensity={materialMode === 'hologram' ? 0.4 : 0.8}
+            color="#00F0FF"
+          />
 
-        <Environment preset="city" environmentIntensity={0.30} />
+          <ScannerPedestal isHologram={materialMode === 'hologram'} />
 
-        {/* Crisp ground contact shadow directly under feet */}
-        <ContactShadows
-          position={[0, 0.001, 0]}
-          resolution={1024}
-          scale={2.6}
-          blur={1.8}
-          opacity={0.75}
-          far={3}
-          color="#000000"
-        />
-
-        {/* Circular Scanner Pedestal */}
-        <ScannerPedestal isHologram={materialMode === 'hologram'} />
-
-        {/* Parametric Body Model */}
-        {processedModel && config && (
-          <Suspense fallback={null}>
+          {processedModel && config && (
             <BodyMesh
               processedModel={processedModel}
               config={config}
@@ -648,9 +500,21 @@ export default function BodyVisualizer({
               showWireframe={showWireframe}
               bodyFat={bodyFat}
               muscleFatigue={muscleFatigue}
+              activePose={activePose}
             />
-          </Suspense>
-        )}
+          )}
+
+          <ContactShadows
+            position={[0, -0.01, 0]}
+            opacity={0.65}
+            scale={2.2}
+            blur={2.4}
+            far={1.5}
+            color="#000000"
+          />
+
+          <Environment preset="city" environmentIntensity={materialMode === 'hologram' ? 0.25 : 0.75} />
+        </Suspense>
       </Canvas>
     </div>
   );
