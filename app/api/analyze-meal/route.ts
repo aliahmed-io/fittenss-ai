@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  GoogleGenerativeAI,
-  HarmCategory,
-  HarmBlockThreshold,
-} from '@google/generative-ai';
+import { GEMINI_MODEL, generateJson } from '@/lib/ai/gemini';
+import { isRecord } from '@/lib/ai/coachSchemas';
+import { checkRateLimit, clientKey, exceedsContentLength } from '@/lib/ai/rateLimiter';
+import type { Provenance } from '@/lib/fitness/types';
+
+export const runtime = 'nodejs';
 
 export interface FoodItem {
   name: string;
@@ -20,7 +21,14 @@ export interface MealScanResult {
   foods: FoodItem[];
   confidence: 'high' | 'medium' | 'low';
   note?: string;
+  provenance: Provenance;
 }
+
+const MAX_BODY_BYTES = 6 * 1024 * 1024;
+const MAX_IMAGE_CHARS = 5_500_000;
+const RATE = { limit: 10, windowMs: 60_000 } as const;
+const MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+const CONFIDENCES = ['high', 'medium', 'low'] as const;
 
 const PROMPT = `You are a professional nutritionist and food recognition AI.
 Analyze this meal photo carefully and identify every visible food item.
@@ -50,55 +58,86 @@ Rules:
 - If image is unclear or not food, set "foods": [] and confidence "low" with a note.
 - Return ONLY the JSON object, nothing else.`;
 
-export async function POST(req: NextRequest) {
-  try {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'GEMINI_API_KEY is not set. Add it to .env.local to enable meal scanning.' },
-        { status: 500 }
-      );
+function bounded(value: unknown, min: number, max: number): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : null;
+}
+
+function normalizeMeal(value: unknown): Omit<MealScanResult, 'provenance'> | null {
+  if (!isRecord(value) || !Array.isArray(value.foods)) return null;
+  const confidence = CONFIDENCES.find((c) => c === value.confidence) ?? 'low';
+  const foods: FoodItem[] = [];
+  for (const raw of value.foods.slice(0, 20)) {
+    if (!isRecord(raw)) continue;
+    const calories = bounded(raw.calories, 0, 3000);
+    const protein = bounded(raw.protein, 0, 300);
+    const carbs = bounded(raw.carbs, 0, 500);
+    const fat = bounded(raw.fat, 0, 300);
+    const amount = bounded(raw.amount, 0, 5000);
+    if (
+      typeof raw.name !== 'string' || raw.name.trim() === '' || typeof raw.unit !== 'string' ||
+      calories === null || protein === null || carbs === null || fat === null || amount === null
+    ) {
+      continue;
     }
-
-    const body = await req.json() as { image: string; mimeType: string };
-    const { image, mimeType } = body;
-
-    if (!image || !mimeType) {
-      return NextResponse.json({ error: 'image and mimeType are required.' }, { status: 400 });
-    }
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      safetySettings: [
-        { category: HarmCategory.HARM_CATEGORY_HARASSMENT,      threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,     threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-      ],
-      generationConfig: {
-        temperature: 0.1,
-        topP: 0.95,
-        responseMimeType: 'application/json',
-      },
+    foods.push({
+      name: raw.name.trim().slice(0, 80),
+      amount,
+      unit: raw.unit.slice(0, 12),
+      calories: Math.round(calories),
+      protein: Math.round(protein),
+      carbs: Math.round(carbs),
+      fat: Math.round(fat),
+      fiber: Math.round(bounded(raw.fiber, 0, 100) ?? 0),
     });
-
-    const result = await model.generateContent([
-      { inlineData: { mimeType: mimeType as 'image/jpeg' | 'image/png' | 'image/webp', data: image } },
-      PROMPT,
-    ]);
-
-    const text = result.response.text();
-    const parsed = JSON.parse(text) as MealScanResult;
-
-    if (!Array.isArray(parsed.foods)) {
-      return NextResponse.json({ error: 'Unexpected response format from AI.' }, { status: 502 });
-    }
-
-    return NextResponse.json(parsed);
-  } catch (err) {
-    console.error('[analyze-meal]', err);
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json({ error: `Analysis failed: ${message}` }, { status: 500 });
   }
+  const note = typeof value.note === 'string' ? value.note.slice(0, 240) : undefined;
+  return note ? { foods, confidence, note } : { foods, confidence };
+}
+
+export async function POST(req: NextRequest): Promise<NextResponse> {
+  const limit = checkRateLimit(clientKey(req.headers, 'meal-scan'), RATE);
+  if (!limit.ok) {
+    return NextResponse.json(
+      { error: 'Too many scans. Please wait a moment.' },
+      { status: 429, headers: { 'Retry-After': String(limit.retryAfterSec) } }
+    );
+  }
+  if (exceedsContentLength(req.headers, MAX_BODY_BYTES)) {
+    return NextResponse.json({ error: 'Image is too large.' }, { status: 413 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON.' }, { status: 400 });
+  }
+  if (!isRecord(body)) return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
+
+  const image = typeof body.image === 'string' ? body.image : '';
+  const mimeType = MIME_TYPES.find((m) => m === body.mimeType);
+  if (!image || !mimeType) {
+    return NextResponse.json({ error: 'A JPEG, PNG or WEBP image is required.' }, { status: 400 });
+  }
+  if (image.length > MAX_IMAGE_CHARS) {
+    return NextResponse.json({ error: 'Image is too large.' }, { status: 413 });
+  }
+
+  const raw = await generateJson([{ inlineData: { mimeType, data: image } }, PROMPT], isRecord, 0.1);
+  const meal = raw ? normalizeMeal(raw) : null;
+  if (meal) {
+    const result: MealScanResult = {
+      ...meal,
+      provenance: { source: 'gemini', confidence: meal.confidence, model: GEMINI_MODEL },
+    };
+    return NextResponse.json(result);
+  }
+
+  const fallback: MealScanResult = {
+    foods: [],
+    confidence: 'low',
+    note: 'AI meal recognition is unavailable right now. Add the meal manually or try again later.',
+    provenance: { source: 'engine-fallback', confidence: 'low' },
+  };
+  return NextResponse.json(fallback);
 }

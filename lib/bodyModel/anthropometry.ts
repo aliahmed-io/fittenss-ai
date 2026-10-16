@@ -1,4 +1,6 @@
-export type Gender = 'female' | 'male' | 'child';
+export type Gender = 'female' | 'male';
+
+export const DEFAULT_HEIGHT_CM: Record<Gender, number> = { female: 165, male: 178 };
 
 export type BodyArchetype = 'Hourglass' | 'Pear' | 'Inverted Triangle' | 'Athletic' | 'Rectangle';
 
@@ -125,8 +127,8 @@ export function generateSmartMeasurements(
   const w = Math.max(35, Math.min(150, weightKg));
   const bf = Math.max(8, Math.min(50, bodyFatPct));
 
-  // Height scaling ratio relative to 165cm baseline
-  const heightFactor = h / 165;
+  // Height scaling ratio relative to the gender-specific baseline stature
+  const heightFactor = h / DEFAULT_HEIGHT_CM[gender];
   // BMI relative to normal median of 21.5
   const currentBmi = w / Math.pow(h / 100, 2);
   const bmiDelta = currentBmi - 21.5;

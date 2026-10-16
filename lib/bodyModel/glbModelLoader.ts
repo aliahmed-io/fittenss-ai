@@ -1,6 +1,29 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three-stdlib';
-import { BodyModelConfig, ProcessedModelResult } from './morphEngine';
+
+export interface BodyModelConfig {
+  baseUrl: string;
+  character: string;
+  skins: string[];
+  morphs: string[];
+  morphslimit: number[];
+  morphslowlimit: number[];
+  morphshighlimit: number[];
+  x: number;
+  y: number;
+  z: number;
+  s: number;
+}
+
+export interface ProcessedModelResult {
+  geometry: THREE.BufferGeometry;
+  morphMap: Map<string, number>;
+  baseScale: number;
+  heightOffset: number;
+  skinnedMesh?: THREE.SkinnedMesh;
+  skeleton?: THREE.Skeleton;
+  scene?: THREE.Group;
+}
 
 function findMeshInGltf(scene: THREE.Group): THREE.SkinnedMesh | THREE.Mesh | null {
   let mesh: THREE.SkinnedMesh | THREE.Mesh | null = null;

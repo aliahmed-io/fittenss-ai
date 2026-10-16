@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useState, useRef, useCallback } from 'react';
-import { X, Upload, Check, Camera, Sparkles, RefreshCw, Loader2 } from 'lucide-react';
+import { X, Upload, Check, Camera, Sparkles, RefreshCw, Loader2, ShieldCheck } from 'lucide-react';
 import { Gender } from '@/lib/bodyModel/anthropometry';
 import type { BodyScanResult } from '@/app/api/analyze-body-scan/route';
+import { downscaleImage } from '@/lib/image/downscale';
 
 interface PhotoScanModalProps {
   isOpen: boolean;
@@ -143,15 +144,21 @@ export default function PhotoScanModal({
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Handle file upload
+  // Handle file upload with client-side downscaling
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
-      if (typeof event.target?.result === 'string') {
-        setImageSrc(event.target.result);
+    reader.onload = async (event) => {
+      const raw = event.target?.result;
+      if (typeof raw === 'string') {
+        try {
+          const downscaled = await downscaleImage(raw, 1280, 0.85);
+          setImageSrc(`data:image/jpeg;base64,${downscaled.base64}`);
+        } catch {
+          setImageSrc(raw);
+        }
         setAiResult(null);
         setError(null);
       }
@@ -639,9 +646,12 @@ export default function PhotoScanModal({
                   <span style={{ fontSize: '10px', color: 'var(--ft-lime)', fontWeight: 600, textTransform: 'uppercase' }}>
                     AI Analysis // {aiResult.somatotype}
                   </span>
-                  <span style={{ fontSize: '9px', color: 'var(--ft-t3)' }}>
-                    Confidence: {aiResult.confidence.toUpperCase()}
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <ShieldCheck style={{ width: '11px', height: '11px', color: 'var(--ft-lime)' }} />
+                    <span style={{ fontSize: '9px', color: 'var(--ft-t3)', textTransform: 'uppercase' }}>
+                      {aiResult.provenance?.source === 'gemini' ? 'Gemini 2.0 Flash' : 'Engine Fallback'} · {aiResult.confidence}
+                    </span>
+                  </div>
                 </div>
                 <p style={{ fontSize: '11px', color: 'var(--ft-t2)', margin: 0, lineHeight: 1.4 }}>
                   {aiResult.feedback}

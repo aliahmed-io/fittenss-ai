@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { Slider } from '@/components/ui/slider';
 import { Input } from '@/components/ui/input';
 import {
@@ -21,124 +22,143 @@ import {
 } from '@/lib/bodyModel/anthropometry';
 import { WORKOUT_STRAIN_PRESETS } from '@/lib/bodyModel/muscleHeatmap';
 import PhotoScanModal from '@/components/PhotoScanModal';
-import { Sparkles, Eye, Layers, RotateCcw, Camera, Flame, Check, ArrowUpRight, Plus, Minus, Activity } from 'lucide-react';
-
-interface MorphConfig {
-  [key: string]: number;
-}
+import BiometricReportModal from '@/components/dashboard/BiometricReportModal';
+import GoalPhysiqueToggle from '@/components/dashboard/GoalPhysiqueToggle';
+import AiCoachPanel from '@/components/dashboard/AiCoachPanel';
+import { useFitnessStore, fitnessActions } from '@/lib/store/fitnessStore';
+import {
+  computeTargets,
+  projectGoalPhysique,
+  goalProgressFraction,
+  weeklyActivity,
+  weeklyTotals,
+  fatigueFromMuscles,
+  computeStreak,
+  toDateKey,
+  type GoalProjection,
+} from '@/lib/fitness/engine';
+import type { CoachResponse, GoalType } from '@/lib/fitness/types';
+import {
+  Sparkles,
+  Eye,
+  Layers,
+  RotateCcw,
+  Camera,
+  Flame,
+  Check,
+  ArrowUpRight,
+  Plus,
+  Minus,
+  Activity,
+  Loader2,
+  FileText,
+} from 'lucide-react';
 
 export default function Home() {
-  const [gender, setGender] = useState<Gender>('female');
+  const router = useRouter();
+  const store = useFitnessStore();
+  const { profile, goal, workoutLogs, progressEntries } = store;
+  const gender = profile.gender;
+
   const [cameraView, setCameraView] = useState<CameraViewPreset>('full');
   const [materialMode, setMaterialMode] = useState<MaterialMode>('hologram');
   const [activePose, setActivePose] = useState<string>('neutral');
   const [showWireframe, setShowWireframe] = useState<boolean>(false);
-  const [isPhotoScanOpen, setIsPhotoScanOpen] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      return params.get('scan') === '1' || window.location.hash === '#scan';
-    }
-    return false;
-  });
+  const [isPhotoScanOpen, setIsPhotoScanOpen] = useState<boolean>(false);
+  const [isReportModalOpen, setIsReportModalOpen] = useState<boolean>(false);
+  const [isGoalPreview, setIsGoalPreview] = useState<boolean>(false);
   const [selectedWorkoutStrain, setSelectedWorkoutStrain] = useState<string>('push');
+  const [isGeneratingPlan, setIsGeneratingPlan] = useState<boolean>(false);
 
-  // Female baseline default morphs
-  const [morphValues, setMorphValues] = useState<MorphConfig>({
-    Height: 158,
-    'Neck Height': 7,
-    Neck: 31,
-    Shoulders: 14,
-    'Shoulder Angle': 1,
-    Breast: 88,
-    'Bust Girth': 68,
-    'Arm Length': 23,
-    'Upper Arm Girth': 26,
-    Wrist: 13.5,
-    'Stomach Form': 0.8,
-    Waist: 69,
-    'Hip Girth': 100,
-    'Hip Height': 82,
-    'Thigh Girth': 57,
-    'Calf Girth': 36,
-    'lower Leg': 45,
-  });
+  // Targets and goal projection
+  const targets = useMemo(() => computeTargets(profile, goal), [profile, goal]);
+  const projection: GoalProjection = useMemo(() => projectGoalPhysique(profile, goal), [profile, goal]);
 
-  const [userInputs, setUserInputs] = useState({
-    height: '165',
-    weight: '62',
-    age: '28',
-    bodyFat: '22',
-  });
+  // Visualizer morphs & fat based on preview toggle
+  const visualizerMorphs = isGoalPreview ? projection.morphValues : profile.morphValues;
+  const visualizerBodyFat = isGoalPreview ? projection.bodyFatPct : profile.bodyFatPct;
 
-  const handleSliderChange = (name: string, value: number) => {
-    setMorphValues((prev) => ({ ...prev, [name]: value }));
-    if (name === 'Height') {
-      setUserInputs((prev) => ({ ...prev, height: Math.round(value).toString() }));
+  // Streak & week activity
+  const streak = useMemo(() => computeStreak(workoutLogs, toDateKey(new Date())), [workoutLogs]);
+  const weekDays = useMemo(() => weeklyActivity(workoutLogs, new Date()), [workoutLogs]);
+  const weekStats = useMemo(() => weeklyTotals(workoutLogs, new Date()), [workoutLogs]);
+
+  // Live anthropometric metrics
+  const metrics = useMemo(() => {
+    return calculateMetrics(
+      gender,
+      profile.heightCm,
+      profile.weightKg,
+      profile.bodyFatPct,
+      profile.morphValues
+    );
+  }, [gender, profile]);
+
+  const activePresets = gender === 'female' ? FEMALE_PRESETS : MALE_PRESETS;
+
+  // Workout strain heatmap
+  const latestLog = workoutLogs[workoutLogs.length - 1];
+  const activeFatigue = useMemo(() => {
+    if (selectedWorkoutStrain === 'last-session' && latestLog) {
+      return fatigueFromMuscles(latestLog.muscles);
+    }
+    const preset = WORKOUT_STRAIN_PRESETS.find((w) => w.id === selectedWorkoutStrain);
+    return preset?.fatigue ?? WORKOUT_STRAIN_PRESETS[0]!.fatigue;
+  }, [selectedWorkoutStrain, latestLog]);
+
+  // Smart Sync
+  const applySmartSync = () => {
+    const smart = generateSmartMeasurements(gender, profile.heightCm, profile.weightKg, profile.bodyFatPct);
+    fitnessActions.setMorphValues(smart);
+  };
+
+  const applyPreset = (presetId: string) => {
+    const preset = activePresets.find((p) => p.id === presetId);
+    if (preset) {
+      fitnessActions.setMorphValues({ ...preset.measurements });
     }
   };
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setUserInputs((prev) => ({ ...prev, [name]: value }));
-    if (name === 'height') {
-      const num = parseFloat(value);
-      if (!isNaN(num) && num >= 100 && num <= 250) {
-        setMorphValues((prev) => ({ ...prev, Height: num }));
-      }
+  const handleSliderChange = (name: string, value: number) => {
+    fitnessActions.setMorphValues({ [name]: value });
+    if (name === 'Height') {
+      fitnessActions.setProfile({ heightCm: Math.round(value) });
     }
   };
 
   const handleGenderChange = (newGender: Gender) => {
-    setGender(newGender);
-    if (newGender === 'male') {
-      const inputs = { height: '178', weight: '78', age: '28', bodyFat: '15' };
-      setUserInputs(inputs);
-      const smart = generateSmartMeasurements('male', 178, 78, 15);
-      setMorphValues(smart);
-    } else if (newGender === 'female') {
-      const inputs = { height: '165', weight: '62', age: '28', bodyFat: '22' };
-      setUserInputs(inputs);
-      const smart = generateSmartMeasurements('female', 165, 62, 22);
-      setMorphValues(smart);
+    fitnessActions.setGender(newGender);
+  };
+
+  const handleGeneratePlan = async () => {
+    setIsGeneratingPlan(true);
+    try {
+      const res = await fetch('/api/ai-coach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'workout-plan',
+          profile,
+          goal,
+          targets,
+          message: '',
+          entries: progressEntries,
+          streak,
+        }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as CoachResponse;
+        if (data.plan) {
+          fitnessActions.addCustomPlan(data.plan);
+        }
+      }
+    } catch {
+      // Handled by route fallback or offline
+    } finally {
+      setIsGeneratingPlan(false);
+      router.push('/workouts');
     }
   };
-
-  const activePresets = gender === 'female' ? FEMALE_PRESETS : MALE_PRESETS;
-
-  // Smart Sync: synchronizes 3D body shape measurements with biometrics
-  const applySmartSync = () => {
-    const h = Number(userInputs.height) || (gender === 'female' ? 165 : 178);
-    const w = Number(userInputs.weight) || (gender === 'female' ? 62 : 78);
-    const bf = Number(userInputs.bodyFat) || (gender === 'female' ? 22 : 15);
-    const smart = generateSmartMeasurements(gender, h, w, bf);
-    setMorphValues(smart);
-  };
-
-  // Apply a curated preset archetype
-  const applyPreset = (presetId: string) => {
-    const preset = activePresets.find((p) => p.id === presetId);
-    if (preset) {
-      setMorphValues({ ...preset.measurements });
-    }
-  };
-
-  const activeFatigue = useMemo(() => {
-    return (
-      WORKOUT_STRAIN_PRESETS.find((w) => w.id === selectedWorkoutStrain)?.fatigue ??
-      WORKOUT_STRAIN_PRESETS[0]!.fatigue
-    );
-  }, [selectedWorkoutStrain]);
-
-  // Calculate live anthropometric health & shape indicators
-  const metrics = useMemo(() => {
-    return calculateMetrics(
-      gender,
-      Number(userInputs.height) || (gender === 'female' ? 165 : 178),
-      Number(userInputs.weight) || (gender === 'female' ? 62 : 78),
-      Number(userInputs.bodyFat) || (gender === 'female' ? 22 : 15),
-      morphValues
-    );
-  }, [gender, userInputs, morphValues]);
 
   const morphLabels: Record<string, string> = {
     Height: 'Height Scale',
@@ -193,11 +213,13 @@ export default function Home() {
       : ['Height','Muscle','Chest','Bust Girth','Waist','Hip Girth','Thigh Girth','Calf','Stomach Form','Shoulders','Upper Arm Girth','Neck','Lower Leg Length','Arm Length'];
 
   const stats = [
-    { label: 'Body Weight', sublabel: 'KG', value: userInputs.weight, lime: false },
-    { label: 'Body Fat',    sublabel: '%',  value: userInputs.bodyFat, lime: false },
-    { label: 'WHR Ratio',   sublabel: '',   value: metrics.whr.toFixed(2), lime: metrics.healthRisk === 'low' },
-    { label: 'Silhouette',  sublabel: '',   value: metrics.archetype, lime: true },
+    { label: 'Body Weight', sublabel: 'KG', value: profile.weightKg, lime: false },
+    { label: 'Body Fat', sublabel: '%', value: profile.bodyFatPct, lime: false },
+    { label: 'WHR Ratio', sublabel: '', value: metrics.whr.toFixed(2), lime: metrics.healthRisk === 'low' },
+    { label: 'Silhouette', sublabel: '', value: metrics.archetype, lime: true },
   ];
+
+  const goalProgressPct = Math.round(goalProgressFraction(goal, progressEntries) * 100);
 
   return (
     <div>
@@ -236,9 +258,9 @@ export default function Home() {
               <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
               WHR Index: {metrics.whr.toFixed(2)} ({metrics.archetype})
               <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
-              GPU Morph Acceleration
+              Target: {targets.calories} KCAL ({targets.protein}g Protein)
               <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
-              Biometric Feedback Ready
+              Streak: {streak} Days
               <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
             </span>
           ))}
@@ -251,7 +273,7 @@ export default function Home() {
         style={{ borderBottom: '1px solid var(--ft-rule)' }}
         aria-label="Key metrics"
       >
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)' }}>
+        <div className="ft-stats-grid">
           {stats.map((s, i) => (
             <div
               key={s.label}
@@ -285,25 +307,9 @@ export default function Home() {
       </section>
 
       {/* ── Main: Scanner + Controls ── */}
-      <div
-        style={{
-          display: 'flex',
-          borderBottom: '1px solid var(--ft-rule)',
-          height: 'calc(100vh - 260px)',
-          minHeight: '680px',
-        }}
-      >
+      <div className="ft-main-split" style={{ borderBottom: '1px solid var(--ft-rule)' }}>
         {/* Left: Scanner Viewport */}
-        <div
-          className="anim-up d-100"
-          style={{
-            flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            borderRight: '1px solid var(--ft-rule)',
-            minWidth: 0,
-          }}
-        >
+        <div className="anim-up d-100 ft-viewport-pane">
           {/* Scanner header */}
           <div
             style={{
@@ -323,14 +329,14 @@ export default function Home() {
                   style={{
                     fontSize: '9px',
                     padding: '2px 6px',
-                    background: 'var(--ft-lime-bg)',
+                    background: isGoalPreview ? 'rgba(203,255,0,0.15)' : 'var(--ft-lime-bg)',
                     color: 'var(--ft-lime)',
-                    border: '1px solid rgba(203,255,0,0.3)',
+                    border: '1px solid rgba(203,255,0,0.4)',
                     textTransform: 'uppercase',
                     letterSpacing: '0.08em',
                   }}
                 >
-                  {metrics.archetype} · WHR {metrics.whr.toFixed(2)}
+                  {isGoalPreview ? `Goal: ${projection.archetype}` : metrics.archetype} · WHR {isGoalPreview ? projection.goalWhr.toFixed(2) : metrics.whr.toFixed(2)}
                 </span>
               </div>
               <p style={{ fontSize: '11px', color: 'var(--ft-t3)', marginTop: '2px' }}>
@@ -398,9 +404,9 @@ export default function Home() {
                 Photo Scan
               </button>
 
-              {/* Gender toggle */}
+              {/* Gender toggle (Strictly Female / Male) */}
               <div style={{ display: 'flex', gap: '2px', background: 'var(--ft-surface)', padding: '2px', border: '1px solid var(--ft-rule)' }} role="group" aria-label="Select gender">
-                {(['female', 'male', 'child'] as const).map((g) => (
+                {(['female', 'male'] as const).map((g) => (
                   <button
                     key={g}
                     onClick={() => handleGenderChange(g)}
@@ -415,15 +421,16 @@ export default function Home() {
             </div>
           </div>
 
+          {/* Goal vs Baseline Toggle Ribbon */}
+          <GoalPhysiqueToggle
+            isGoalPreview={isGoalPreview}
+            onToggle={setIsGoalPreview}
+            projection={projection}
+            currentWeightKg={profile.weightKg}
+          />
+
           {/* 3D WebGL Canvas Viewport */}
-          <div
-            style={{
-              flex: 1,
-              background: '#090909',
-              position: 'relative',
-              minHeight: '580px',
-            }}
-          >
+          <div className="ft-viewport-canvas">
             {/* Precision crosshairs */}
             <div
               style={{
@@ -452,7 +459,7 @@ export default function Home() {
               aria-hidden="true"
             />
 
-            {/* Pose Action Selector (Floating at top-left of viewport) */}
+            {/* Pose Action Selector */}
             <div
               style={{
                 position: 'absolute',
@@ -501,15 +508,15 @@ export default function Home() {
                 fontSize: '9px',
                 letterSpacing: '0.14em',
                 textTransform: 'uppercase',
-                color: 'rgba(255,255,255,0.2)',
+                color: isGoalPreview ? 'var(--ft-lime)' : 'rgba(255,255,255,0.25)',
                 zIndex: 10,
               }}
               aria-hidden="true"
             >
-              PARAMETRIC / {gender.toUpperCase()}
+              {isGoalPreview ? `PROJECTED GOAL / ${projection.archetype.toUpperCase()}` : `PARAMETRIC / ${gender.toUpperCase()}`}
             </p>
 
-            {/* Quick Camera Angle & Zoom Toolbar (Floating at bottom of viewport) */}
+            {/* Quick Camera Angle Toolbar */}
             <div
               style={{
                 position: 'absolute',
@@ -551,7 +558,7 @@ export default function Home() {
               <button
                 onClick={() => window.dispatchEvent(new CustomEvent('visualizer:zoom', { detail: { delta: 1 } }))}
                 className="btn-ghost"
-                title="Zoom in (or scroll mouse wheel)"
+                title="Zoom in"
                 style={{ padding: '4px 8px', fontSize: '9px', display: 'flex', alignItems: 'center', gap: '3px' }}
               >
                 <Plus style={{ width: '10px', height: '10px' }} />
@@ -561,7 +568,7 @@ export default function Home() {
               <button
                 onClick={() => window.dispatchEvent(new CustomEvent('visualizer:zoom', { detail: { delta: -1 } }))}
                 className="btn-ghost"
-                title="Zoom out (or scroll mouse wheel)"
+                title="Zoom out"
                 style={{ padding: '4px 8px', fontSize: '9px', display: 'flex', alignItems: 'center', gap: '3px' }}
               >
                 <Minus style={{ width: '10px', height: '10px' }} />
@@ -571,11 +578,11 @@ export default function Home() {
             {/* 3D Visualizer Component */}
             <BodyVisualizer
               gender={gender}
-              morphValues={morphValues}
+              morphValues={visualizerMorphs}
               materialMode={materialMode}
               cameraView={cameraView}
               showWireframe={showWireframe}
-              bodyFat={Number(userInputs.bodyFat) || (gender === 'female' ? 22 : 15)}
+              bodyFat={visualizerBodyFat}
               muscleFatigue={activeFatigue}
               activePose={activePose}
             />
@@ -583,16 +590,7 @@ export default function Home() {
         </div>
 
         {/* Right: Controls Panel */}
-        <div
-          className="anim-up d-150"
-          style={{
-            width: '440px',
-            flexShrink: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-          }}
-        >
+        <div className="anim-up d-150 ft-controls-pane">
           <Tabs defaultValue="body" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div style={{ padding: '0 0', flexShrink: 0 }}>
               <TabsList style={{ width: '100%', justifyContent: 'flex-start', paddingInline: '0' }}>
@@ -632,48 +630,68 @@ export default function Home() {
                     </label>
                     <Select
                       value={gender}
-                      onValueChange={(val) => { if (val) setGender(val as Gender); }}
+                      onValueChange={(val) => { if (val === 'female' || val === 'male') handleGenderChange(val); }}
                     >
                       <SelectTrigger id="gender-select"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="female">Female</SelectItem>
                         <SelectItem value="male">Male</SelectItem>
-                        <SelectItem value="child">Child</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
                     <label htmlFor="age-input" style={{ display: 'block', fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '4px' }}>Age</label>
-                    <Input id="age-input" name="age" type="number" value={userInputs.age} onChange={handleInputChange} placeholder="28" />
+                    <Input
+                      id="age-input"
+                      type="number"
+                      value={profile.age}
+                      onChange={(e) => fitnessActions.setProfile({ age: Number(e.target.value) || 28 })}
+                    />
                   </div>
                   <div>
                     <label htmlFor="height-input" style={{ display: 'block', fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '4px' }}>Height (cm)</label>
-                    <Input id="height-input" name="height" type="number" value={userInputs.height} onChange={handleInputChange} placeholder="165" />
+                    <Input
+                      id="height-input"
+                      type="number"
+                      value={profile.heightCm}
+                      onChange={(e) => {
+                        const h = Number(e.target.value);
+                        if (h >= 100 && h <= 250) {
+                          fitnessActions.setProfile({ heightCm: h });
+                          fitnessActions.setMorphValues({ Height: h });
+                        }
+                      }}
+                    />
                   </div>
                   <div>
                     <label htmlFor="weight-input" style={{ display: 'block', fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '4px' }}>Weight (kg)</label>
-                    <Input id="weight-input" name="weight" type="number" value={userInputs.weight} onChange={handleInputChange} placeholder="62" />
+                    <Input
+                      id="weight-input"
+                      type="number"
+                      value={profile.weightKg}
+                      onChange={(e) => fitnessActions.setProfile({ weightKg: Number(e.target.value) || 70 })}
+                    />
                   </div>
                 </div>
 
-                {/* Body Fat slider in personal info */}
+                {/* Body Fat slider */}
                 <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid var(--ft-rule)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                     <span style={{ fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ft-t2)' }}>
                       Estimated Body Fat
                     </span>
                     <span className="data-val" style={{ fontSize: '11px', color: 'var(--ft-lime)' }}>
-                      {userInputs.bodyFat}%
+                      {profile.bodyFatPct}%
                     </span>
                   </div>
                   <Slider
-                    value={[Number(userInputs.bodyFat) || 22]}
-                    min={10}
+                    value={[profile.bodyFatPct]}
+                    min={6}
                     max={45}
                     step={0.5}
                     onValueChange={(val) => {
-                      const v = Array.isArray(val) ? val[0] ?? 22 : val;
-                      setUserInputs((prev) => ({ ...prev, bodyFat: String(v) }));
+                      const v = Array.isArray(val) ? val[0] ?? 20 : val;
+                      fitnessActions.setProfile({ bodyFatPct: v });
                     }}
                   />
                 </div>
@@ -719,7 +737,7 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Workout Strain Selector (When in heatmap mode) */}
+              {/* Workout Strain Selector */}
               {materialMode === 'heatmap' && (
                 <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--ft-rule)', background: 'rgba(203,255,0,0.03)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
@@ -730,6 +748,23 @@ export default function Home() {
                     <span style={{ fontSize: '8px', color: 'var(--ft-t3)' }}>3D THERMAL MAP</span>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {latestLog && (
+                      <button
+                        onClick={() => setSelectedWorkoutStrain('last-session')}
+                        className={selectedWorkoutStrain === 'last-session' ? 'btn-lime' : 'btn-ghost'}
+                        style={{
+                          padding: '8px 10px',
+                          fontSize: '10px',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <span style={{ fontWeight: 600 }}>Last Session ({latestLog.planName})</span>
+                        <span style={{ fontSize: '8px', opacity: 0.8 }}>Logged Strain</span>
+                      </button>
+                    )}
                     {WORKOUT_STRAIN_PRESETS.map((w) => (
                       <button
                         key={w.id}
@@ -755,34 +790,32 @@ export default function Home() {
               )}
 
               {/* Shape Archetype Presets */}
-              {(gender === 'female' || gender === 'male') && (
-                <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--ft-rule)' }}>
-                  <p className="eyebrow" style={{ marginBottom: '10px' }}>
-                    Shape Archetypes ({gender})
-                  </p>
-                  <div style={{ display: 'grid', gridTemplateColumns: gender === 'male' ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)', gap: '6px' }}>
-                    {activePresets.map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => applyPreset(p.id)}
-                        className="btn-ghost"
-                        style={{
-                          padding: '8px 6px',
-                          fontSize: '9px',
-                          textAlign: 'center',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          gap: '2px',
-                        }}
-                      >
-                        <span style={{ fontWeight: 600, color: 'var(--ft-t1)' }}>{p.name.split(' ')[0]}</span>
-                        <span style={{ fontSize: '8px', color: 'var(--ft-t3)' }}>{p.id}</span>
-                      </button>
-                    ))}
-                  </div>
+              <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--ft-rule)' }}>
+                <p className="eyebrow" style={{ marginBottom: '10px' }}>
+                  Shape Archetypes ({gender})
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: gender === 'male' ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)', gap: '6px' }}>
+                  {activePresets.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => applyPreset(p.id)}
+                      className="btn-ghost"
+                      style={{
+                        padding: '8px 6px',
+                        fontSize: '9px',
+                        textAlign: 'center',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '2px',
+                      }}
+                    >
+                      <span style={{ fontWeight: 600, color: 'var(--ft-t1)' }}>{p.name.split(' ')[0]}</span>
+                      <span style={{ fontSize: '8px', color: 'var(--ft-t3)' }}>{p.id}</span>
+                    </button>
+                  ))}
                 </div>
-              )}
+              </div>
 
               {/* Detailed Morph Sliders */}
               <div style={{ padding: '0 24px' }}>
@@ -799,7 +832,7 @@ export default function Home() {
 
                 {activeMorphs.map((morph) => {
                   const range = getMorphRange(morph);
-                  const currentVal = morphValues[morph] ?? range.default;
+                  const currentVal = profile.morphValues[morph] ?? range.default;
                   const isHighlight =
                     morph === 'Breast' ||
                     morph === 'Chest' ||
@@ -864,29 +897,63 @@ export default function Home() {
             <TabsContent value="goals" style={{ flex: 1, overflowY: 'auto', margin: 0 }}>
               <div style={{ padding: '24px 28px' }}>
                 <div style={{ marginBottom: '20px' }}>
-                  <label style={{ display: 'block', fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '8px' }}>Primary Goal</label>
-                  <Select defaultValue="weight-loss">
+                  <label htmlFor="goal-select" style={{ display: 'block', fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '8px' }}>
+                    Primary Goal
+                  </label>
+                  <Select
+                    value={goal.type}
+                    onValueChange={(val) => {
+                      if (val) fitnessActions.setGoalType(val as GoalType);
+                    }}
+                  >
                     <SelectTrigger id="goal-select"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="weight-loss">Lose Weight & Sculpt</SelectItem>
                       <SelectItem value="muscle-gain">Build Lean Muscle</SelectItem>
-                      <SelectItem value="maintain">Maintain Shape & Tone</SelectItem>
+                      <SelectItem value="recomp">Body Recomposition</SelectItem>
                       <SelectItem value="strength">Increase Strength</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
+                {/* Target Weight & Timeline Inputs */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px' }}>
+                  <div>
+                    <label htmlFor="target-weight-input" style={{ display: 'block', fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '4px' }}>
+                      Target Weight (kg)
+                    </label>
+                    <Input
+                      id="target-weight-input"
+                      type="number"
+                      value={goal.targetWeightKg}
+                      onChange={(e) => fitnessActions.setGoal({ targetWeightKg: Number(e.target.value) || profile.weightKg })}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="timeline-input" style={{ display: 'block', fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '4px' }}>
+                      Timeline (Weeks)
+                    </label>
+                    <Input
+                      id="timeline-input"
+                      type="number"
+                      value={goal.timelineWeeks}
+                      onChange={(e) => fitnessActions.setGoal({ timelineWeeks: Math.max(1, Number(e.target.value) || 12) })}
+                    />
+                  </div>
+                </div>
+
                 {/* Goal metrics as editorial stat blocks */}
                 {[
-                  { label: 'Target Weight', value: '58', unit: 'KG' },
-                  { label: 'Timeline',       value: '10', unit: 'WKS' },
-                  { label: 'Weekly Velocity', value: '-0.4', unit: 'KG' },
-                  { label: 'Target WHR',     value: '0.68', unit: 'INDEX' },
+                  { label: 'Target Weight', value: String(goal.targetWeightKg), unit: 'KG' },
+                  { label: 'Timeline', value: String(goal.timelineWeeks), unit: 'WKS' },
+                  { label: 'Weekly Velocity', value: String(targets.weeklyVelocityKg), unit: 'KG/WK' },
+                  { label: 'Target WHR', value: projection.goalWhr.toFixed(2), unit: 'INDEX' },
+                  { label: 'Prescribed Intake', value: String(targets.calories), unit: 'KCAL' },
                 ].map((item, i) => (
                   <div
                     key={item.label}
                     style={{
-                      padding: '16px 0',
+                      padding: '14px 0',
                       borderTop: '1px solid var(--ft-rule)',
                       display: 'flex',
                       alignItems: 'flex-end',
@@ -894,7 +961,7 @@ export default function Home() {
                     }}
                   >
                     <p className="eyebrow">{item.label}</p>
-                    <p className="d-md data-val" style={{ color: i === 0 ? 'var(--ft-lime)' : 'var(--ft-t1)' }}>
+                    <p className="d-md data-val" style={{ color: i === 0 || i === 4 ? 'var(--ft-lime)' : 'var(--ft-t1)' }}>
                       {item.value}
                       <span style={{ fontSize: '0.5em', color: 'var(--ft-t3)', marginLeft: '4px' }}>{item.unit}</span>
                     </p>
@@ -905,62 +972,26 @@ export default function Home() {
                 <div style={{ paddingTop: '16px', borderTop: '1px solid var(--ft-rule)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
                     <p className="eyebrow">Goal Progress</p>
-                    <span className="data-val" style={{ fontSize: '11px', color: 'var(--ft-lime)' }}>72%</span>
+                    <span className="data-val" style={{ fontSize: '11px', color: 'var(--ft-lime)' }}>
+                      {goalProgressPct}%
+                    </span>
                   </div>
-                  <div style={{ height: '2px', background: 'var(--ft-rule-strong)' }}>
-                    <div style={{ width: '72%', height: '100%', background: 'var(--ft-lime)' }} />
+                  <div style={{ height: '3px', background: 'var(--ft-rule-strong)' }}>
+                    <div style={{ width: `${goalProgressPct}%`, height: '100%', background: 'var(--ft-lime)', transition: 'width 0.4s ease' }} />
                   </div>
                 </div>
               </div>
             </TabsContent>
 
             {/* AI Coach Tab */}
-            <TabsContent value="ai" style={{ flex: 1, margin: 0 }}>
-              <div style={{ padding: '28px 24px' }}>
-                <p className="eyebrow" style={{ marginBottom: '16px' }}>AI Anatomical Coach</p>
-
-                <blockquote
-                  style={{
-                    borderLeft: '2px solid var(--ft-lime)',
-                    paddingLeft: '16px',
-                    marginBottom: '24px',
-                  }}
-                >
-                  <p style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--ft-t1)' }}>
-                    &quot;Your current waist-to-hip ratio is{' '}
-                    <span style={{ color: 'var(--ft-lime)', fontWeight: 600 }}>{metrics.whr.toFixed(2)}</span>, categorized as a{' '}
-                    <span style={{ fontWeight: 600 }}>{metrics.archetype}</span> silhouette. Prioritize resistance hip thrusts and romanian deadlifts to maintain gluteal tone while sustaining a modest calorie deficit.&quot;
-                  </p>
-                </blockquote>
-
-                <div style={{ borderTop: '1px solid var(--ft-rule)', paddingTop: '16px' }}>
-                  <p className="eyebrow" style={{ marginBottom: '10px' }}>Biometric Sources</p>
-                  {['3D GPU Anatomical Mesh', 'Gynoid Adipose Ratio', 'Calculated Lean Mass', 'WHR Index'].map((src) => (
-                    <div
-                      key={src}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '10px',
-                        padding: '8px 0',
-                        borderBottom: '1px solid var(--ft-rule)',
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: '4px',
-                          height: '4px',
-                          background: 'var(--ft-lime)',
-                          flexShrink: 0,
-                          display: 'inline-block',
-                        }}
-                        aria-hidden="true"
-                      />
-                      <span style={{ fontSize: '11px', color: 'var(--ft-t2)' }}>{src}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+            <TabsContent value="ai" style={{ flex: 1, margin: 0, overflow: 'hidden' }}>
+              <AiCoachPanel
+                profile={profile}
+                goal={goal}
+                targets={targets}
+                metrics={metrics}
+                streak={streak}
+              />
             </TabsContent>
           </Tabs>
 
@@ -975,18 +1006,52 @@ export default function Home() {
               flexShrink: 0,
             }}
           >
-            <button className="btn-lime" style={{ padding: '12px 18px', justifyContent: 'center', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span>Generate Workout Plan</span>
-              <ArrowUpRight style={{ width: '13px', height: '13px' }} />
+            <button
+              onClick={handleGeneratePlan}
+              disabled={isGeneratingPlan}
+              className="btn-lime"
+              style={{
+                padding: '12px 18px',
+                justifyContent: 'center',
+                fontSize: '11px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                cursor: isGeneratingPlan ? 'wait' : 'pointer',
+              }}
+            >
+              {isGeneratingPlan ? (
+                <>
+                  <Loader2 style={{ width: '13px', height: '13px', animation: 'spin 1s linear infinite' }} />
+                  <span>Synthesizing Custom Plan...</span>
+                </>
+              ) : (
+                <>
+                  <span>Generate Workout Plan</span>
+                  <ArrowUpRight style={{ width: '13px', height: '13px' }} />
+                </>
+              )}
             </button>
-            <button className="btn-ghost" style={{ padding: '10px 18px', justifyContent: 'center', fontSize: '11px' }}>
+            <button
+              onClick={() => setIsReportModalOpen(true)}
+              className="btn-ghost"
+              style={{
+                padding: '10px 18px',
+                justifyContent: 'center',
+                fontSize: '11px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              <FileText style={{ width: '12px', height: '12px' }} />
               Export Biometric Report
             </button>
           </div>
         </div>
       </div>
 
-      {/* ── AI Strip ── */}
+      {/* ── AI / Activity Strip ── */}
       <section
         className="anim-up d-200"
         style={{
@@ -1000,13 +1065,10 @@ export default function Home() {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '24px', minWidth: 0 }}>
           <p className="eyebrow" style={{ flexShrink: 0 }}>This Week</p>
-          {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, i) => {
-            const isToday = i === 1;
-            const isDone = i === 0;
-            const isRest = i >= 5;
+          {weekDays.map((day) => {
             return (
-              <div key={`${day}-${i}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-                <span style={{ fontSize: '9px', letterSpacing: '0.1em', color: 'var(--ft-t3)' }}>{day}</span>
+              <div key={day.dateKey} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '9px', letterSpacing: '0.1em', color: 'var(--ft-t3)' }}>{day.label}</span>
                 <div
                   style={{
                     width: '28px',
@@ -1014,29 +1076,44 @@ export default function Home() {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    border: isToday ? '1px solid var(--ft-lime)' : isDone ? '1px solid rgba(203,255,0,0.3)' : '1px solid var(--ft-rule)',
-                    background: isToday ? 'var(--ft-lime-bg)' : 'transparent',
+                    border: day.isToday
+                      ? '1px solid var(--ft-lime)'
+                      : day.done
+                      ? '1px solid rgba(203,255,0,0.4)'
+                      : '1px solid var(--ft-rule)',
+                    background: day.isToday ? 'var(--ft-lime-bg)' : day.done ? 'rgba(203,255,0,0.06)' : 'transparent',
                   }}
                 >
-                  {isDone && <Check style={{ width: '12px', height: '12px', color: 'var(--ft-lime)' }} />}
-                  {isToday && <span style={{ width: '5px', height: '5px', background: 'var(--ft-lime)', display: 'block' }} />}
-                  {!isDone && !isToday && <span style={{ width: '4px', height: '4px', background: isRest ? 'var(--ft-t3)' : 'var(--ft-rule-strong)', display: 'block' }} />}
+                  {day.done ? (
+                    <Check style={{ width: '12px', height: '12px', color: 'var(--ft-lime)' }} />
+                  ) : day.isToday ? (
+                    <span style={{ width: '5px', height: '5px', background: 'var(--ft-lime)', display: 'block' }} />
+                  ) : (
+                    <span style={{ width: '4px', height: '4px', background: 'var(--ft-rule-strong)', display: 'block' }} />
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '32px', flexShrink: 0 }}>
-          {[
-            { label: 'Calories Burned', value: '1,840 KCAL' },
-            { label: 'Workouts Done', value: '2/5' },
-          ].map((item) => (
-            <div key={item.label}>
-              <p className="eyebrow">{item.label}</p>
-              <p className="data-val" style={{ fontSize: '14px', fontWeight: 600, marginTop: '2px' }}>{item.value}</p>
-            </div>
-          ))}
-          <button className="btn-lime" style={{ padding: '10px 18px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div>
+            <p className="eyebrow">Calories Burned</p>
+            <p className="data-val" style={{ fontSize: '14px', fontWeight: 600, marginTop: '2px', color: 'var(--ft-t1)' }}>
+              {weekStats.calories.toLocaleString()} KCAL
+            </p>
+          </div>
+          <div>
+            <p className="eyebrow">Workouts Done</p>
+            <p className="data-val" style={{ fontSize: '14px', fontWeight: 600, marginTop: '2px', color: 'var(--ft-lime)' }}>
+              {weekStats.workouts}/5
+            </p>
+          </div>
+          <button
+            onClick={() => router.push('/progress')}
+            className="btn-lime"
+            style={{ padding: '10px 18px', display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
             <span>View Progress</span>
             <ArrowUpRight style={{ width: '13px', height: '13px' }} />
           </button>
@@ -1049,8 +1126,18 @@ export default function Home() {
         isOpen={isPhotoScanOpen}
         onClose={() => setIsPhotoScanOpen(false)}
         gender={gender}
-        currentHeightCm={Number(userInputs.height) || (gender === 'female' ? 165 : 178)}
-        onApplyMorphs={(overrides) => setMorphValues((prev) => ({ ...prev, ...overrides }))}
+        currentHeightCm={profile.heightCm}
+        onApplyMorphs={(overrides) => fitnessActions.setMorphValues(overrides)}
+      />
+
+      {/* Biometric Report Modal */}
+      <BiometricReportModal
+        isOpen={isReportModalOpen}
+        onClose={() => setIsReportModalOpen(false)}
+        profile={profile}
+        metrics={metrics}
+        goal={goal}
+        targets={targets}
       />
     </div>
   );

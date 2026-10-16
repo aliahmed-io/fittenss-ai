@@ -5,21 +5,22 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Environment, ContactShadows } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
-import {
-  BodyModelConfig,
-  ProcessedModelResult,
-} from '@/lib/bodyModel/morphEngine';
-
 import { generateMuscleHeatmapColors, MuscleFatigueState, WORKOUT_STRAIN_PRESETS } from '@/lib/bodyModel/muscleHeatmap';
-import { loadGlbHumanModel, computeGLBMorphInfluences } from '@/lib/bodyModel/glbModelLoader';
+import {
+  loadGlbHumanModel,
+  computeGLBMorphInfluences,
+  type BodyModelConfig,
+  type ProcessedModelResult,
+} from '@/lib/bodyModel/glbModelLoader';
 import { createDynamicBodyMaterial, updateDynamicBodyMaterial } from '@/lib/bodyModel/dynamicPbrShader';
 import { PoseController } from '@/lib/bodyModel/poseSystem';
+import { computeLimbRatios } from '@/lib/bodyModel/limbScaling';
 
 export type CameraViewPreset = 'full' | 'torso' | 'lower' | 'profile' | 'back';
 export type MaterialMode = 'hologram' | 'pbr' | 'sculpt' | 'athletic' | 'wireframe' | 'heatmap';
 
 export interface BodyVisualizerProps {
-  gender?: 'male' | 'female' | 'child';
+  gender?: 'male' | 'female';
   morphValues: Record<string, number>;
   materialMode?: MaterialMode;
   cameraView?: CameraViewPreset;
@@ -220,9 +221,20 @@ function BodyMesh({
 
   // Pose Controller for procedural animations
   const poseController = useMemo(() => new PoseController(), []);
+  const sceneRef = useRef<THREE.Group | null>(null);
+
+  const limbRatios = useMemo(
+    () => computeLimbRatios(isFemale ? 'female' : 'male', morphValues),
+    [isFemale, morphValues]
+  );
+
+  useEffect(() => {
+    poseController.setLimbRatios(limbRatios.arm, limbRatios.lowerLeg);
+  }, [poseController, limbRatios]);
 
   useEffect(() => {
     meshRef.current = processedModel.skinnedMesh ?? null;
+    sceneRef.current = processedModel.scene ?? null;
     if (processedModel.skeleton) {
       poseController.setSkeleton(processedModel.skeleton);
     }
@@ -314,6 +326,9 @@ function BodyMesh({
   // Smooth frame updates: poses, morphs, shader uniforms
   useFrame((_, delta) => {
     poseController.update(delta);
+    if (sceneRef.current) {
+      sceneRef.current.position.y = poseController.getGroundOffset();
+    }
 
     const activeMesh = meshRef.current;
     if (activeMesh?.morphTargetInfluences) {

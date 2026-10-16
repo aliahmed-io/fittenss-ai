@@ -73,6 +73,14 @@ export const POSES: Record<string, PoseKeyframe> = {
   },
 };
 
+const ARM_SCALED_BONES: ReadonlySet<string> = new Set([
+  'lowerarm_l',
+  'lowerarm_r',
+  'hand_l',
+  'hand_r',
+]);
+const LOWER_LEG_SCALED_BONES: ReadonlySet<string> = new Set(['foot_l', 'foot_r']);
+
 export class PoseController {
   private skeleton: THREE.Skeleton | null = null;
   private boneInitialQuaternions: Map<string, THREE.Quaternion> = new Map();
@@ -81,6 +89,9 @@ export class PoseController {
   private targetPoseName: string = 'neutral';
   private transitionAlpha: number = 1.0;
   private transitionSpeed: number = 4.0;
+  private armRatio: number = 1;
+  private lowerLegRatio: number = 1;
+  private dirty: boolean = true;
 
   public setSkeleton(skeleton: THREE.Skeleton) {
     if (this.skeleton === skeleton && this.boneInitialQuaternions.size > 0) {
@@ -98,6 +109,7 @@ export class PoseController {
     this.currentPoseName = 'neutral';
     this.targetPoseName = 'neutral';
     this.transitionAlpha = 1.0;
+    this.dirty = true;
   }
 
   public setPose(poseName: string) {
@@ -107,13 +119,34 @@ export class PoseController {
     this.transitionAlpha = 0.0;
   }
 
+  /** Sets limb-length ratios (1 = anatomical default). */
+  public setLimbRatios(arm: number, lowerLeg: number) {
+    if (Math.abs(arm - this.armRatio) < 1e-4 && Math.abs(lowerLeg - this.lowerLegRatio) < 1e-4) {
+      return;
+    }
+    this.armRatio = arm;
+    this.lowerLegRatio = lowerLeg;
+    this.dirty = true;
+  }
+
   public getPoseName(): string {
     return this.targetPoseName;
   }
 
+  /**
+   * Vertical correction (scene units) that keeps the feet planted on the floor
+   * after the lower leg has been lengthened or shortened.
+   */
+  public getGroundOffset(): number {
+    const foot = this.boneInitialPositions.get('foot_l');
+    if (!foot) return 0;
+    return (this.lowerLegRatio - 1) * foot.length();
+  }
+
   public update(delta: number) {
     if (!this.skeleton || this.boneInitialQuaternions.size === 0) return;
-    if (this.transitionAlpha >= 1.0 && this.currentPoseName === this.targetPoseName) return;
+    const settled = this.transitionAlpha >= 1.0 && this.currentPoseName === this.targetPoseName;
+    if (settled && !this.dirty) return;
 
     this.transitionAlpha = Math.min(1.0, this.transitionAlpha + delta * this.transitionSpeed);
     const t = this.transitionAlpha < 0.5
@@ -145,9 +178,16 @@ export class PoseController {
       const pFrom = initPos.clone().add(new THREE.Vector3(...posFrom));
       const pTo = initPos.clone().add(new THREE.Vector3(...posTo));
       bone.position.copy(pFrom).lerp(pTo, t);
+
+      if (ARM_SCALED_BONES.has(bone.name)) {
+        bone.position.multiplyScalar(this.armRatio);
+      } else if (LOWER_LEG_SCALED_BONES.has(bone.name)) {
+        bone.position.multiplyScalar(this.lowerLegRatio);
+      }
     }
 
     this.skeleton.update();
+    this.dirty = false;
     if (this.transitionAlpha >= 1.0) {
       this.currentPoseName = this.targetPoseName;
     }
