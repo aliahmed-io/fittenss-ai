@@ -1,18 +1,12 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Slider } from '@/components/ui/slider';
 import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import BodyVisualizer, { CameraViewPreset, MaterialMode } from '@/components/BodyVisualizer';
+import CurrentWeightDialog from '@/components/dashboard/CurrentWeightDialog';
+import BodyVisualizer, { CameraViewPreset } from '@/components/BodyVisualizer';
 import {
   calculateMetrics,
   generateSmartMeasurements,
@@ -20,19 +14,18 @@ import {
   MALE_PRESETS,
   Gender,
 } from '@/lib/bodyModel/anthropometry';
-import { WORKOUT_STRAIN_PRESETS } from '@/lib/bodyModel/muscleHeatmap';
 import PhotoScanModal from '@/components/PhotoScanModal';
 import BiometricReportModal from '@/components/dashboard/BiometricReportModal';
 import GoalPhysiqueToggle from '@/components/dashboard/GoalPhysiqueToggle';
 import AiCoachPanel from '@/components/dashboard/AiCoachPanel';
 import { useFitnessStore, fitnessActions } from '@/lib/store/fitnessStore';
 import {
+  buildWorkoutPlan,
   computeTargets,
   projectGoalPhysique,
   goalProgressFraction,
   weeklyActivity,
   weeklyTotals,
-  fatigueFromMuscles,
   computeStreak,
   toDateKey,
   type GoalProjection,
@@ -40,35 +33,33 @@ import {
 import type { CoachResponse, GoalType } from '@/lib/fitness/types';
 import {
   Sparkles,
-  Eye,
-  Layers,
   RotateCcw,
-  Camera,
   Flame,
   Check,
   ArrowUpRight,
-  Plus,
-  Minus,
-  Activity,
   Loader2,
   FileText,
 } from 'lucide-react';
 
 export default function Home() {
   const router = useRouter();
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('scan') === '1') setIsPhotoScanOpen(true);
+    const openScan = () => setIsPhotoScanOpen(true);
+    window.addEventListener('fitness:open-scan', openScan);
+    return () => window.removeEventListener('fitness:open-scan', openScan);
+  }, []);
   const store = useFitnessStore();
   const { profile, goal, workoutLogs, progressEntries } = store;
   const gender = profile.gender;
 
   const [cameraView, setCameraView] = useState<CameraViewPreset>('full');
-  const [materialMode, setMaterialMode] = useState<MaterialMode>('hologram');
-  const [activePose, setActivePose] = useState<string>('neutral');
-  const [showWireframe, setShowWireframe] = useState<boolean>(false);
+  const [isWeightEditorOpen, setIsWeightEditorOpen] = useState(false);
   const [isPhotoScanOpen, setIsPhotoScanOpen] = useState<boolean>(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState<boolean>(false);
   const [isGoalPreview, setIsGoalPreview] = useState<boolean>(false);
-  const [selectedWorkoutStrain, setSelectedWorkoutStrain] = useState<string>('push');
   const [isGeneratingPlan, setIsGeneratingPlan] = useState<boolean>(false);
+  const [goalError, setGoalError] = useState('');
 
   // Targets and goal projection
   const targets = useMemo(() => computeTargets(profile, goal), [profile, goal]);
@@ -96,16 +87,6 @@ export default function Home() {
 
   const activePresets = gender === 'female' ? FEMALE_PRESETS : MALE_PRESETS;
 
-  // Workout strain heatmap
-  const latestLog = workoutLogs[workoutLogs.length - 1];
-  const activeFatigue = useMemo(() => {
-    if (selectedWorkoutStrain === 'last-session' && latestLog) {
-      return fatigueFromMuscles(latestLog.muscles);
-    }
-    const preset = WORKOUT_STRAIN_PRESETS.find((w) => w.id === selectedWorkoutStrain);
-    return preset?.fatigue ?? WORKOUT_STRAIN_PRESETS[0]!.fatigue;
-  }, [selectedWorkoutStrain, latestLog]);
-
   // Smart Sync
   const applySmartSync = () => {
     const smart = generateSmartMeasurements(gender, profile.heightCm, profile.weightKg, profile.bodyFatPct);
@@ -115,7 +96,7 @@ export default function Home() {
   const applyPreset = (presetId: string) => {
     const preset = activePresets.find((p) => p.id === presetId);
     if (preset) {
-      fitnessActions.setMorphValues({ ...preset.measurements });
+      fitnessActions.setProfile({ heightCm: preset.measurements.Height ?? profile.heightCm, morphValues: { ...preset.measurements, Muscle: profile.morphValues.Muscle ?? 50 } });
     }
   };
 
@@ -146,14 +127,16 @@ export default function Home() {
           streak,
         }),
       });
+      if (!res.ok) throw new Error('Plan service unavailable');
       if (res.ok) {
         const data = (await res.json()) as CoachResponse;
+        if (!data.plan) throw new Error('No plan returned');
         if (data.plan) {
           fitnessActions.addCustomPlan(data.plan);
         }
       }
     } catch {
-      // Handled by route fallback or offline
+      fitnessActions.addCustomPlan(buildWorkoutPlan(profile, goal, `local-${Date.now()}`));
     } finally {
       setIsGeneratingPlan(false);
       router.push('/workouts');
@@ -162,7 +145,7 @@ export default function Home() {
 
   const morphLabels: Record<string, string> = {
     Height: 'Height Scale',
-    Muscle: 'Overall Muscle Hypertrophy',
+    Muscle: 'Muscle definition',
     Chest: gender === 'male' ? 'Chest / Pectorals' : 'Chest Girth',
     Neck: 'Neck Girth',
     'Neck Height': 'Neck Length',
@@ -186,6 +169,7 @@ export default function Home() {
   };
 
   const getMorphRange = (name: string) => {
+    if (name === 'Muscle') return { min: 0, max: 100, default: 50 };
     if (gender === 'female') {
       const fc = {
         morphs: ['Height','Neck Height','Neck','Shoulders','Shoulder Angle','Breast','Bust Girth','Arm Length','Upper Arm Girth','Wrist','Stomach Form','Waist','Hip Girth','Hip Height','Thigh Girth','Calf Girth','lower Leg'],
@@ -214,7 +198,7 @@ export default function Home() {
 
   const stats = [
     { label: 'Body Weight', sublabel: 'KG', value: profile.weightKg, lime: false },
-    { label: 'Body Fat', sublabel: '%', value: profile.bodyFatPct, lime: false },
+    { label: 'Body fat estimate', sublabel: '%', value: profile.bodyFatPct, lime: false },
     { label: 'WHR Ratio', sublabel: '', value: metrics.whr.toFixed(2), lime: metrics.healthRisk === 'low' },
     { label: 'Silhouette', sublabel: '', value: metrics.archetype, lime: true },
   ];
@@ -223,50 +207,6 @@ export default function Home() {
 
   return (
     <div>
-      {/* ── Ticker ── */}
-      <div
-        style={{
-          borderBottom: '1px solid var(--ft-rule)',
-          background: 'var(--ft-surface)',
-          overflow: 'hidden',
-          height: '32px',
-          display: 'flex',
-          alignItems: 'center',
-        }}
-        aria-hidden="true"
-      >
-        <div
-          className="anim-tick"
-          style={{
-            display: 'flex',
-            whiteSpace: 'nowrap',
-            gap: '0',
-          }}
-        >
-          {Array.from({ length: 8 }).map((_, i) => (
-            <span
-              key={i}
-              style={{
-                fontSize: '10px',
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: 'var(--ft-t3)',
-                paddingInline: '40px',
-              }}
-            >
-              Parametric 3D Scan Active
-              <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
-              WHR Index: {metrics.whr.toFixed(2)} ({metrics.archetype})
-              <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
-              Target: {targets.calories} KCAL ({targets.protein}g Protein)
-              <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
-              Streak: {streak} Days
-              <span style={{ color: 'var(--ft-lime)', margin: '0 20px', opacity: 0.6 }}>•</span>
-            </span>
-          ))}
-        </div>
-      </div>
-
       {/* ── Stats Bar ── */}
       <section
         className="anim-up"
@@ -284,7 +224,7 @@ export default function Home() {
             >
               <p
                 className="d-xl"
-                style={{ color: s.lime ? 'var(--ft-lime)' : 'var(--ft-t1)' }}
+                style={{ color: s.lime ? 'var(--ft-lime)' : 'var(--ft-t1)', ...(s.label === 'Silhouette' ? { fontSize: 'clamp(20px, 3.6vw, 56px)', overflowWrap: 'anywhere' as const } : {}) }}
               >
                 {s.value}
                 {s.sublabel && (
@@ -301,6 +241,7 @@ export default function Home() {
                 )}
               </p>
               <p className="eyebrow" style={{ marginTop: '6px' }}>{s.label}</p>
+              {s.label === 'Body Weight' && <button className="ft-weight-link" onClick={() => setIsWeightEditorOpen(true)}>Change weight</button>}
             </div>
           ))}
         </div>
@@ -324,7 +265,7 @@ export default function Home() {
           >
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <p className="eyebrow">3D Anatomical Visualizer</p>
+                <p className="eyebrow">Your body in 3D</p>
                 <span
                   style={{
                     fontSize: '9px',
@@ -340,85 +281,11 @@ export default function Home() {
                 </span>
               </div>
               <p style={{ fontSize: '11px', color: 'var(--ft-t3)', marginTop: '2px' }}>
-                Rotate 360° · Right-click or drag to pan · Scroll to zoom
+                Weight, height, and body fat shape this illustrative preview.
               </p>
             </div>
 
-            {/* Viewport Toolbar */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              {/* Material mode selector */}
-              <div style={{ display: 'flex', gap: '2px', background: 'var(--ft-surface)', padding: '2px', border: '1px solid var(--ft-rule)' }}>
-                {(['hologram', 'pbr', 'sculpt', 'athletic', 'heatmap'] as const).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setMaterialMode(m)}
-                    className={materialMode === m ? 'btn-lime' : 'btn-ghost'}
-                    style={{
-                      padding: '4px 10px',
-                      fontSize: '9px',
-                      textTransform: 'capitalize',
-                      ...(m === 'hologram' && materialMode === 'hologram'
-                        ? { background: 'rgba(0, 240, 255, 0.2)', color: '#00F0FF', borderColor: 'rgba(0, 240, 255, 0.5)' }
-                        : {}),
-                    }}
-                  >
-                    {m === 'hologram' ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                        <Sparkles style={{ width: '10px', height: '10px' }} />
-                        Hologram
-                      </span>
-                    ) : m === 'pbr' ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                        <Layers style={{ width: '10px', height: '10px' }} />
-                        PBR Studio
-                      </span>
-                    ) : m === 'heatmap' ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                        <Flame style={{ width: '10px', height: '10px' }} />
-                        Strain Heatmap
-                      </span>
-                    ) : (
-                      m
-                    )}
-                  </button>
-                ))}
-                <button
-                  onClick={() => setShowWireframe(!showWireframe)}
-                  className={showWireframe ? 'btn-lime' : 'btn-ghost'}
-                  style={{ padding: '4px 8px', fontSize: '9px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                  title="Toggle wireframe mesh"
-                >
-                  <Layers style={{ width: '10px', height: '10px' }} />
-                  Grid
-                </button>
-              </div>
 
-              {/* Photo Scan Button */}
-              <button
-                onClick={() => setIsPhotoScanOpen(true)}
-                className="btn-lime"
-                style={{ padding: '4px 10px', fontSize: '9px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                title="Photo Biometric Contour Scan"
-              >
-                <Camera style={{ width: '10px', height: '10px' }} />
-                Photo Scan
-              </button>
-
-              {/* Gender toggle (Strictly Female / Male) */}
-              <div style={{ display: 'flex', gap: '2px', background: 'var(--ft-surface)', padding: '2px', border: '1px solid var(--ft-rule)' }} role="group" aria-label="Select gender">
-                {(['female', 'male'] as const).map((g) => (
-                  <button
-                    key={g}
-                    onClick={() => handleGenderChange(g)}
-                    className={gender === g ? 'btn-lime' : 'btn-ghost'}
-                    style={{ padding: '4px 12px', fontSize: '9px', textTransform: 'capitalize' }}
-                    aria-pressed={gender === g}
-                  >
-                    {g}
-                  </button>
-                ))}
-              </div>
-            </div>
           </div>
 
           {/* Goal vs Baseline Toggle Ribbon */}
@@ -459,46 +326,6 @@ export default function Home() {
               aria-hidden="true"
             />
 
-            {/* Pose Action Selector */}
-            <div
-              style={{
-                position: 'absolute',
-                top: '16px',
-                left: '20px',
-                zIndex: 10,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-                background: 'rgba(15,15,15,0.85)',
-                backdropFilter: 'blur(8px)',
-                padding: '4px',
-                border: '1px solid var(--ft-rule)',
-              }}
-            >
-              <span style={{ fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ft-t3)', padding: '0 6px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                <Activity style={{ width: '10px', height: '10px', color: 'var(--ft-lime)' }} />
-                Pose
-              </span>
-              {(
-                [
-                  { id: 'neutral', label: 'Neutral' },
-                  { id: 'double_biceps', label: 'Biceps Flex' },
-                  { id: 'lat_spread', label: 'Lat Spread' },
-                  { id: 'squat_deep', label: 'Squat' },
-                  { id: 'deadlift_hinge', label: 'Deadlift' },
-                ] as const
-              ).map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => setActivePose(p.id)}
-                  className={activePose === p.id ? 'btn-lime' : 'btn-ghost'}
-                  style={{ padding: '4px 8px', fontSize: '9px' }}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-
             {/* Model Badge */}
             <p
               style={{
@@ -513,78 +340,20 @@ export default function Home() {
               }}
               aria-hidden="true"
             >
-              {isGoalPreview ? `PROJECTED GOAL / ${projection.archetype.toUpperCase()}` : `PARAMETRIC / ${gender.toUpperCase()}`}
+              {isGoalPreview ? projection.weightKg : profile.weightKg} kg · {profile.heightCm} cm · {visualizerBodyFat}% fat
             </p>
 
-            {/* Quick Camera Angle Toolbar */}
-            <div
-              style={{
-                position: 'absolute',
-                bottom: '16px',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                zIndex: 10,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-                background: 'rgba(15,15,15,0.85)',
-                backdropFilter: 'blur(8px)',
-                padding: '4px',
-                border: '1px solid var(--ft-rule)',
-              }}
-            >
-              {(
-                [
-                  { id: 'full', label: 'Full Body' },
-                  { id: 'torso', label: 'Torso' },
-                  { id: 'lower', label: 'Legs' },
-                  { id: 'profile', label: 'Profile' },
-                  { id: 'back', label: 'Back' },
-                ] as const
-              ).map((preset) => (
-                <button
-                  key={preset.id}
-                  onClick={() => setCameraView(preset.id)}
-                  className={cameraView === preset.id ? 'btn-lime' : 'btn-ghost'}
-                  style={{ padding: '4px 10px', fontSize: '9px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                >
-                  <Eye style={{ width: '10px', height: '10px' }} />
-                  {preset.label}
-                </button>
-              ))}
-
-              <div style={{ width: '1px', height: '14px', background: 'var(--ft-rule)', margin: '0 2px' }} />
-
-              <button
-                onClick={() => window.dispatchEvent(new CustomEvent('visualizer:zoom', { detail: { delta: 1 } }))}
-                className="btn-ghost"
-                title="Zoom in"
-                style={{ padding: '4px 8px', fontSize: '9px', display: 'flex', alignItems: 'center', gap: '3px' }}
-              >
-                <Plus style={{ width: '10px', height: '10px' }} />
-                <span>Zoom</span>
-              </button>
-
-              <button
-                onClick={() => window.dispatchEvent(new CustomEvent('visualizer:zoom', { detail: { delta: -1 } }))}
-                className="btn-ghost"
-                title="Zoom out"
-                style={{ padding: '4px 8px', fontSize: '9px', display: 'flex', alignItems: 'center', gap: '3px' }}
-              >
-                <Minus style={{ width: '10px', height: '10px' }} />
-              </button>
+            <div className="ft-camera-simple" role="group" aria-label="Camera views">
+              {([{ id: 'full', label: 'Full body' }, { id: 'profile', label: 'Profile' }] as const).map(preset => <button key={preset.id} aria-pressed={cameraView === preset.id} className={cameraView === preset.id ? 'btn-lime' : 'btn-ghost'} onClick={() => { setCameraView(preset.id); window.dispatchEvent(new CustomEvent('visualizer:view')); }}>{preset.label}</button>)}
+              <span>Drag to rotate · Pinch or scroll to zoom</span>
             </div>
-
             {/* 3D Visualizer Component */}
             <BodyVisualizer
               gender={gender}
               morphValues={visualizerMorphs}
-              materialMode={materialMode}
+              weightKg={isGoalPreview ? projection.weightKg : profile.weightKg}
               cameraView={cameraView}
-              showWireframe={showWireframe}
               bodyFat={visualizerBodyFat}
-              muscleFatigue={activeFatigue}
-              activePose={activePose}
             />
           </div>
         </div>
@@ -605,10 +374,11 @@ export default function Home() {
               value="body"
               style={{ flex: 1, overflowY: 'auto', margin: 0 }}
             >
+              <details className="ft-disclosure ft-profile-editor"><summary><span>Your profile</span><span className="ft-summary-value">{profile.heightCm} cm · {profile.weightKg} kg</span></summary>
               {/* Personal Info & Smart Sync */}
               <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--ft-rule)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-                  <p className="eyebrow">Biometric Baseline</p>
+                  <p className="eyebrow">Edit your profile</p>
                   <button
                     onClick={applySmartSync}
                     className="btn-lime"
@@ -628,16 +398,7 @@ export default function Home() {
                     >
                       Gender
                     </label>
-                    <Select
-                      value={gender}
-                      onValueChange={(val) => { if (val === 'female' || val === 'male') handleGenderChange(val); }}
-                    >
-                      <SelectTrigger id="gender-select"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="female">Female</SelectItem>
-                        <SelectItem value="male">Male</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <select id="gender-select" className="ft-native-select" value={gender} onChange={e => handleGenderChange(e.target.value as Gender)}><option value="male">Male</option><option value="female">Female</option></select>
                   </div>
                   <div>
                     <label htmlFor="age-input" style={{ display: 'block', fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '4px' }}>Age</label>
@@ -665,12 +426,7 @@ export default function Home() {
                   </div>
                   <div>
                     <label htmlFor="weight-input" style={{ display: 'block', fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '4px' }}>Weight (kg)</label>
-                    <Input
-                      id="weight-input"
-                      type="number"
-                      value={profile.weightKg}
-                      onChange={(e) => fitnessActions.setProfile({ weightKg: Number(e.target.value) || 70 })}
-                    />
+                    <button id="weight-input" className="btn-ghost" style={{ padding: '10px 12px' }} onClick={() => setIsWeightEditorOpen(true)}>{profile.weightKg} kg · Change weight</button>
                   </div>
                 </div>
 
@@ -697,6 +453,7 @@ export default function Home() {
                 </div>
               </div>
 
+              </details>
               {/* Anthropometric Insights Card */}
               <div
                 style={{
@@ -737,58 +494,7 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Workout Strain Selector */}
-              {materialMode === 'heatmap' && (
-                <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--ft-rule)', background: 'rgba(203,255,0,0.03)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                    <p className="eyebrow" style={{ color: 'var(--ft-lime)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Flame style={{ width: '12px', height: '12px' }} />
-                      Workout Strain Protocol
-                    </p>
-                    <span style={{ fontSize: '8px', color: 'var(--ft-t3)' }}>3D THERMAL MAP</span>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    {latestLog && (
-                      <button
-                        onClick={() => setSelectedWorkoutStrain('last-session')}
-                        className={selectedWorkoutStrain === 'last-session' ? 'btn-lime' : 'btn-ghost'}
-                        style={{
-                          padding: '8px 10px',
-                          fontSize: '10px',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          textAlign: 'left',
-                        }}
-                      >
-                        <span style={{ fontWeight: 600 }}>Last Session ({latestLog.planName})</span>
-                        <span style={{ fontSize: '8px', opacity: 0.8 }}>Logged Strain</span>
-                      </button>
-                    )}
-                    {WORKOUT_STRAIN_PRESETS.map((w) => (
-                      <button
-                        key={w.id}
-                        onClick={() => setSelectedWorkoutStrain(w.id)}
-                        className={selectedWorkoutStrain === w.id ? 'btn-lime' : 'btn-ghost'}
-                        style={{
-                          padding: '8px 10px',
-                          fontSize: '10px',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          textAlign: 'left',
-                        }}
-                      >
-                        <span style={{ fontWeight: 600 }}>{w.name.split(' (')[0]}</span>
-                        <span style={{ fontSize: '8px', opacity: 0.8 }}>
-                          {w.id === 'rest' ? 'Baseline' : 'Peak Pump'}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
+              <details className="ft-disclosure ft-detailed-body"><summary>Detailed body customization</summary><p className="ft-helper">Optional proportions and body types. Your profile already creates a starting shape.</p>
               {/* Shape Archetype Presets */}
               <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--ft-rule)' }}>
                 <p className="eyebrow" style={{ marginBottom: '10px' }}>
@@ -798,8 +504,10 @@ export default function Home() {
                   {activePresets.map((p) => (
                     <button
                       key={p.id}
+                      title={p.description}
+                      aria-pressed={Object.entries(p.measurements).every(([key, value]) => profile.morphValues[key] === value)}
                       onClick={() => applyPreset(p.id)}
-                      className="btn-ghost"
+                      className={Object.entries(p.measurements).every(([key, value]) => profile.morphValues[key] === value) ? "btn-lime" : "btn-ghost"}
                       style={{
                         padding: '8px 6px',
                         fontSize: '9px',
@@ -879,6 +587,7 @@ export default function Home() {
                         </span>
                       </div>
                       <Slider
+                        aria-label={morphLabels[morph] || morph}
                         value={[currentVal]}
                         min={range.min}
                         max={range.max}
@@ -891,6 +600,7 @@ export default function Home() {
                   );
                 })}
               </div>
+              </details>
             </TabsContent>
 
             {/* Goals Tab */}
@@ -900,20 +610,10 @@ export default function Home() {
                   <label htmlFor="goal-select" style={{ display: 'block', fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '8px' }}>
                     Primary Goal
                   </label>
-                  <Select
-                    value={goal.type}
-                    onValueChange={(val) => {
-                      if (val) fitnessActions.setGoalType(val as GoalType);
-                    }}
-                  >
-                    <SelectTrigger id="goal-select"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="weight-loss">Lose Weight & Sculpt</SelectItem>
-                      <SelectItem value="muscle-gain">Build Lean Muscle</SelectItem>
-                      <SelectItem value="recomp">Body Recomposition</SelectItem>
-                      <SelectItem value="strength">Increase Strength</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <select id="goal-select" className="ft-native-select" value={goal.type} onChange={e => { setGoalError(''); fitnessActions.setGoalType(e.target.value as GoalType); }}>
+                    <option value="weight-loss">Lose weight</option><option value="muscle-gain">Build muscle</option><option value="recomp">Body recomposition</option><option value="strength">Build strength</option>
+                  </select>
+                  <p className="ft-feedback">{goal.type === 'weight-loss' ? 'A gradual weight-loss plan with strength training.' : goal.type === 'muscle-gain' ? 'A small calorie surplus with progressive strength training.' : goal.type === 'recomp' ? 'Aim to maintain weight while building muscle and reducing body fat.' : 'Focus on getting stronger; body weight can stay stable.'} Your daily targets and newly generated plans follow this choice.</p>
                 </div>
 
                 {/* Target Weight & Timeline Inputs */}
@@ -925,8 +625,8 @@ export default function Home() {
                     <Input
                       id="target-weight-input"
                       type="number"
-                      value={goal.targetWeightKg}
-                      onChange={(e) => fitnessActions.setGoal({ targetWeightKg: Number(e.target.value) || profile.weightKg })}
+                      key={`weight-${goal.type}-${goal.targetWeightKg}`} defaultValue={goal.targetWeightKg} min={30} max={250} step={0.1}
+                      onBlur={e => { const value = Number(e.target.value); if (!Number.isFinite(value) || value < 30 || value > 250) { setGoalError('Target weight must be between 30 and 250 kg.'); e.target.value = String(goal.targetWeightKg); return; } setGoalError(''); fitnessActions.setGoal({ targetWeightKg: value }); }}
                     />
                   </div>
                   <div>
@@ -936,12 +636,13 @@ export default function Home() {
                     <Input
                       id="timeline-input"
                       type="number"
-                      value={goal.timelineWeeks}
-                      onChange={(e) => fitnessActions.setGoal({ timelineWeeks: Math.max(1, Number(e.target.value) || 12) })}
+                      key={`weeks-${goal.type}-${goal.timelineWeeks}`} defaultValue={goal.timelineWeeks} min={1} max={104} step={1}
+                      onBlur={e => { const value = Number(e.target.value); if (!Number.isInteger(value) || value < 1 || value > 104) { setGoalError('Choose a timeline from 1 to 104 weeks.'); e.target.value = String(goal.timelineWeeks); return; } setGoalError(''); fitnessActions.setGoal({ timelineWeeks: value }); }}
                     />
                   </div>
                 </div>
 
+                {goalError && <p role="alert" className="ft-feedback ft-error">{goalError}</p>}
                 {/* Goal metrics as editorial stat blocks */}
                 {[
                   { label: 'Target Weight', value: String(goal.targetWeightKg), unit: 'KG' },
@@ -1023,7 +724,7 @@ export default function Home() {
               {isGeneratingPlan ? (
                 <>
                   <Loader2 style={{ width: '13px', height: '13px', animation: 'spin 1s linear infinite' }} />
-                  <span>Synthesizing Custom Plan...</span>
+                  <span>Creating your workout...</span>
                 </>
               ) : (
                 <>
@@ -1053,7 +754,7 @@ export default function Home() {
 
       {/* ── AI / Activity Strip ── */}
       <section
-        className="anim-up d-200"
+        className="anim-up d-200 ft-activity-strip"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -1120,6 +821,7 @@ export default function Home() {
         </div>
       </section>
 
+      {isWeightEditorOpen && <CurrentWeightDialog onClose={() => setIsWeightEditorOpen(false)} />}
       {/* Photo Biometric Contour Scanner Modal */}
       <PhotoScanModal
         key={gender}

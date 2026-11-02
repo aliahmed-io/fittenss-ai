@@ -27,7 +27,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "FitTransform AI — 3D Body Intelligence",
   description:
-    "Visualize your body in 3D, track biometrics with precision, and get AI-powered fitness intelligence.",
+    "Explore your physique in 3D, plan workouts and meals, and track your nutrition, recovery, and progress.",
 };
 
 export default function RootLayout({

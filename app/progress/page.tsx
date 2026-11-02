@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { useDialogFocus } from '@/lib/hooks/useDialogFocus';
 import { Input } from '@/components/ui/input';
 import {
   TrendingDown,
@@ -15,7 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { useFitnessStore, fitnessActions } from '@/lib/store/fitnessStore';
-import { analyzeProgress, computeStreak, toDateKey } from '@/lib/fitness/engine';
+import { analyzeProgress, computeTargets, computeStreak, toDateKey } from '@/lib/fitness/engine';
 import type { CoachResponse, ProgressEntry, ProgressInsight } from '@/lib/fitness/types';
 
 type MetricKey = 'weightKg' | 'bodyFatPct' | 'muscleMassPct' | 'waistCm';
@@ -42,12 +43,13 @@ export default function ProgressPage() {
   // Active chart metric tab
   const [selectedMetric, setSelectedMetric] = useState<MetricKey>('weightKg');
   const [showForm, setShowForm] = useState(false);
+  const [entryError, setEntryError] = useState('');
   const [newEntry, setNewEntry] = useState({
     date: toDateKey(new Date()),
     weightKg: String(profile.weightKg),
-    bodyFatPct: String(profile.bodyFatPct),
-    muscleMassPct: '50',
-    waistCm: String(profile.morphValues['Waist'] ?? 75),
+    bodyFatPct: '',
+    muscleMassPct: '',
+    waistCm: '',
     notes: '',
   });
 
@@ -56,6 +58,8 @@ export default function ProgressPage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<ProgressInsight | null>(null);
   const [analysisProvenance, setAnalysisProvenance] = useState<{ source: string; confidence: string } | null>(null);
+
+  const analysisDialogRef = useDialogFocus(isAnalysisOpen, () => setIsAnalysisOpen(false));
 
   // Sync confirmation notification
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
@@ -72,13 +76,18 @@ export default function ProgressPage() {
   const latest = entries[entries.length - 1];
 
   const weightDelta = first && latest ? +(latest.weightKg - first.weightKg).toFixed(1) : 0;
-  const fatDelta = first && latest ? +(latest.bodyFatPct - first.bodyFatPct).toFixed(1) : 0;
-  const waistDelta = first && latest ? +(latest.waistCm - first.waistCm).toFixed(1) : 0;
+  const fatEntries = entries.filter(e => e.bodyFatPct > 0);
+  const waistEntries = entries.filter(e => e.waistCm > 0);
+  const fatDelta = fatEntries.length >= 2 ? +(fatEntries.at(-1)!.bodyFatPct - fatEntries[0]!.bodyFatPct).toFixed(1) : 0;
+  const waistDelta = waistEntries.length >= 2 ? +(waistEntries.at(-1)!.waistCm - waistEntries[0]!.waistCm).toFixed(1) : 0;
 
   const handleAddEntry = () => {
     const w = Number(newEntry.weightKg);
+    const optional = [Number(newEntry.bodyFatPct), Number(newEntry.muscleMassPct), Number(newEntry.waistCm)];
+    if (!Number.isFinite(w) || w < 30 || w > 250 || optional.some(v => !Number.isFinite(v) || v < 0) || optional[0]! > 60 || optional[1]! > 100 || optional[2]! > 200 || !newEntry.date || newEntry.date > toDateKey(new Date())) { setEntryError('Enter a valid date and weight between 30 and 250 kg. Optional measurements must be within their ranges.'); return; }
+    setEntryError('');
     if (w > 0) {
-      fitnessActions.addProgressEntry({
+      const saved = fitnessActions.addProgressEntry({
         date: newEntry.date || toDateKey(new Date()),
         weightKg: w,
         bodyFatPct: Number(newEntry.bodyFatPct) || 0,
@@ -86,13 +95,14 @@ export default function ProgressPage() {
         waistCm: Number(newEntry.waistCm) || 0,
         notes: newEntry.notes.trim(),
       });
+      if (saved.date === toDateKey(new Date())) fitnessActions.syncProfileFromEntry(saved);
       setShowForm(false);
     }
   };
 
   const handleSyncToModel = (entry: ProgressEntry) => {
     fitnessActions.syncProfileFromEntry(entry);
-    setSyncFeedback(`3D avatar synchronized to ${entry.date} (${entry.weightKg} kg, ${entry.bodyFatPct}% BF).`);
+    setSyncFeedback(`3D avatar synchronized to ${entry.date} (${entry.weightKg} kg, ${entry.bodyFatPct > 0 ? `${entry.bodyFatPct}%` : '—'} BF).`);
     setTimeout(() => setSyncFeedback(null), 4000);
   };
 
@@ -107,19 +117,21 @@ export default function ProgressPage() {
           mode: 'progress-analysis',
           profile,
           goal,
-          targets: { calories: 2000, protein: 140, carbs: 200, fat: 60 },
+          targets: computeTargets(profile, goal),
           message: '',
           entries,
           streak,
         }),
       });
 
+      if (!res.ok) throw new Error('Analysis service unavailable');
       if (res.ok) {
         const data = (await res.json()) as CoachResponse;
+        if (!data.insight) throw new Error('No analysis returned');
         if (data.insight) {
           setAnalysisResult(data.insight);
           setAnalysisProvenance({
-            source: data.provenance.source === 'gemini' ? 'Gemini 2.0 Flash' : 'Deterministic Engine',
+            source: data.provenance.source === 'gemini' ? 'AI coach' : 'Built-in progress analysis',
             confidence: data.provenance.confidence,
           });
         }
@@ -128,7 +140,7 @@ export default function ProgressPage() {
       // Local fallback
       const base = analyzeProgress(entries, goal, toDateKey(new Date()));
       setAnalysisResult(base);
-      setAnalysisProvenance({ source: 'Deterministic Engine', confidence: 'medium' });
+      setAnalysisProvenance({ source: 'Built-in progress analysis', confidence: 'medium' });
     } finally {
       setAnalyzing(false);
     }
@@ -137,13 +149,14 @@ export default function ProgressPage() {
   // SVG Chart points calculation for active metric
   const chartW = 900;
   const chartH = 160;
-  const activeVals = entries.map((e) => e[selectedMetric]);
+  const chartEntries = entries.filter(e => selectedMetric === 'weightKg' || e[selectedMetric] > 0);
+  const activeVals = chartEntries.map((e) => e[selectedMetric]);
   const minVal = activeVals.length > 0 ? Math.min(...activeVals) - 1 : 0;
   const maxVal = activeVals.length > 0 ? Math.max(...activeVals) + 1 : 10;
   const valRange = Math.max(maxVal - minVal, 1);
 
-  const pts = entries.map((e, i) => ({
-    x: entries.length === 1 ? chartW / 2 : (i / Math.max(entries.length - 1, 1)) * (chartW - 64) + 32,
+  const pts = chartEntries.map((e, i) => ({
+    x: chartEntries.length === 1 ? chartW / 2 : (i / Math.max(chartEntries.length - 1, 1)) * (chartW - 64) + 32,
     y: chartH - ((e[selectedMetric] - minVal) / valRange) * (chartH - 40) - 20,
     val: e[selectedMetric],
     date: e.date,
@@ -200,7 +213,7 @@ export default function ProgressPage() {
           </p>
         </div>
         <button
-          onClick={() => setShowForm(!showForm)}
+          onClick={() => { if (!showForm) { setNewEntry({ date: toDateKey(new Date()), weightKg: String(profile.weightKg), bodyFatPct: '', muscleMassPct: '', waistCm: '', notes: '' }); setEntryError(''); } setShowForm(!showForm); }}
           className={showForm ? 'btn-ghost' : 'btn-lime'}
           style={{ padding: '12px 20px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '8px' }}
         >
@@ -211,7 +224,7 @@ export default function ProgressPage() {
 
       {/* ── Hero Stats ── */}
       <section
-        className="anim-up d-50"
+        className="anim-up d-50 ft-responsive-stats"
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(4, 1fr)',
@@ -230,17 +243,17 @@ export default function ProgressPage() {
           },
           {
             label: 'Body Fat Delta',
-            value: first && latest ? `${fatDelta > 0 ? '+' : ''}${fatDelta}` : '0',
+            value: fatEntries.length >= 2 ? `${fatDelta > 0 ? '+' : ''}${fatDelta}` : '—',
             unit: '%',
-            sub: first && latest ? `${first.bodyFatPct}% to ${latest.bodyFatPct}%` : 'No history yet',
+            sub: fatEntries.length >= 2 ? `${fatEntries[0]!.bodyFatPct}% to ${fatEntries.at(-1)!.bodyFatPct}%` : 'Add two measurements',
             down: fatDelta < 0,
             lime: fatDelta < 0,
           },
           {
             label: 'Waist Delta',
-            value: first && latest ? `${waistDelta > 0 ? '+' : ''}${waistDelta}` : '0',
+            value: waistEntries.length >= 2 ? `${waistDelta > 0 ? '+' : ''}${waistDelta}` : '—',
             unit: 'CM',
-            sub: first && latest ? `${first.waistCm} to ${latest.waistCm} CM` : 'No history yet',
+            sub: waistEntries.length >= 2 ? `${waistEntries[0]!.waistCm} to ${waistEntries.at(-1)!.waistCm} CM` : 'Add two measurements',
             down: waistDelta < 0,
             lime: waistDelta < 0,
           },
@@ -310,10 +323,10 @@ export default function ProgressPage() {
           )}
         </div>
 
-        {entries.length === 0 ? (
+        {chartEntries.length === 0 ? (
           <div style={{ padding: '60px 0', textAlign: 'center' }}>
             <p style={{ color: 'var(--ft-t3)', fontSize: '13px' }}>
-              No progress logs recorded yet. Click &quot;Log New Entry&quot; above to begin your trajectory.
+              No measurements recorded for this metric yet. Click &quot;Log New Entry&quot; above to begin your trajectory.
             </p>
           </div>
         ) : (
@@ -375,7 +388,7 @@ export default function ProgressPage() {
 
             {/* X-axis dates */}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '8px', paddingInline: '32px' }}>
-              {entries.map((e) => (
+              {chartEntries.map((e) => (
                 <span key={e.id} className="data-val" style={{ fontSize: '10px', color: 'var(--ft-t3)' }}>
                   {new Date(e.date).toLocaleDateString('en', { month: 'short', day: 'numeric' })}
                 </span>
@@ -395,14 +408,15 @@ export default function ProgressPage() {
             background: 'var(--ft-surface)',
           }}
         >
-          <p className="eyebrow" style={{ marginBottom: '20px' }}>Log Biometric Check-in</p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr) 1.5fr auto', gap: '12px', alignItems: 'end' }}>
+          <p className="eyebrow" style={{ marginBottom: '12px' }}>Check in with your weight</p><p className="ft-feedback">Today’s check-in also updates your profile and 3D preview.</p>
+          <div className="ft-checkin-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px', alignItems: 'end' }}>
             <div>
               <label htmlFor="checkin-date" style={{ display: 'block', fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '4px' }}>
                 Date
               </label>
               <Input
                 id="checkin-date"
+                max={toDateKey(new Date())}
                 type="date"
                 value={newEntry.date}
                 onChange={(e) => setNewEntry({ ...newEntry, date: e.target.value })}
@@ -419,6 +433,7 @@ export default function ProgressPage() {
                 onChange={(e) => setNewEntry({ ...newEntry, weightKg: e.target.value })}
               />
             </div>
+            <details className="ft-disclosure ft-inline-details"><summary>Add measurements or a note (optional)</summary><div className="ft-checkin-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
             <div>
               <label htmlFor="checkin-bodyfat" style={{ display: 'block', fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '4px' }}>
                 Body Fat (%)
@@ -464,6 +479,8 @@ export default function ProgressPage() {
                 placeholder="Condition, energy, pump..."
               />
             </div>
+            </div></details>
+            {entryError && <p role="alert" className="ft-feedback ft-error">{entryError}</p>}
             <button
               onClick={handleAddEntry}
               className="btn-lime"
@@ -489,7 +506,7 @@ export default function ProgressPage() {
         >
           <p className="eyebrow">Check-in History ({entries.length} entries)</p>
           <span style={{ fontSize: '10px', color: 'var(--ft-t3)' }}>
-            Click &quot;Sync to 3D Avatar&quot; to calibrate the 3D model with any log point
+            Today’s check-ins update your profile automatically
           </span>
         </div>
 
@@ -503,7 +520,7 @@ export default function ProgressPage() {
             return (
               <div
                 key={entry.id}
-                className="anim-up"
+                className="anim-up ft-progress-history-row"
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -540,11 +557,11 @@ export default function ProgressPage() {
                   </div>
                   <div>
                     <span className="eyebrow" style={{ fontSize: '8px' }}>Body Fat</span>
-                    <p className="data-val" style={{ fontSize: '13px', color: 'var(--ft-t1)', margin: 0 }}>{entry.bodyFatPct}%</p>
+                    <p className="data-val" style={{ fontSize: '13px', color: 'var(--ft-t1)', margin: 0 }}>{entry.bodyFatPct > 0 ? `${entry.bodyFatPct}%` : '—'}</p>
                   </div>
                   <div>
                     <span className="eyebrow" style={{ fontSize: '8px' }}>Waist</span>
-                    <p className="data-val" style={{ fontSize: '13px', color: 'var(--ft-t1)', margin: 0 }}>{entry.waistCm} CM</p>
+                    <p className="data-val" style={{ fontSize: '13px', color: 'var(--ft-t1)', margin: 0 }}>{entry.waistCm > 0 ? `${entry.waistCm} CM` : '—'}</p>
                   </div>
                 </div>
 
@@ -554,7 +571,7 @@ export default function ProgressPage() {
                 </p>
 
                 {/* Actions: Sync to Avatar & Delete */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                <details className="ft-disclosure ft-entry-options"><summary>Options</summary><div className="ft-entry-actions">
                   <button
                     onClick={() => handleSyncToModel(entry)}
                     className="btn-ghost"
@@ -573,7 +590,7 @@ export default function ProgressPage() {
                   >
                     <Trash2 style={{ width: '13px', height: '13px' }} />
                   </button>
-                </div>
+                </div></details>
               </div>
             );
           })
@@ -593,10 +610,10 @@ export default function ProgressPage() {
         }}
       >
         <div>
-          <p className="eyebrow" style={{ marginBottom: '12px' }}>AI-Powered Synthesis</p>
-          <h2 className="d-md" style={{ marginBottom: '8px' }}>Progress & Trajectory Analysis</h2>
+          <p className="eyebrow" style={{ marginBottom: '12px' }}>Progress review</p>
+          <h2 className="d-md" style={{ marginBottom: '8px' }}>See how you’re progressing</h2>
           <p style={{ fontSize: '13px', color: 'var(--ft-t2)', maxWidth: '480px' }}>
-            Linear regression and sports-science evaluation of your body composition rate of change, with goal ETA projections.
+            Review your weight trend and find practical next steps based on your check-ins.
           </p>
         </div>
         <button
@@ -623,6 +640,7 @@ export default function ProgressPage() {
             justifyContent: 'center',
             padding: '24px',
           }}
+          ref={analysisDialogRef as React.RefObject<HTMLDivElement>}
           role="dialog"
           aria-modal="true"
           aria-labelledby="analysis-modal-title"
@@ -643,9 +661,9 @@ export default function ProgressPage() {
             {/* Header */}
             <div style={{ padding: '20px 28px', borderBottom: '1px solid var(--ft-rule)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <p className="eyebrow" style={{ color: 'var(--ft-lime)' }}>Biomechanics AI Insight</p>
+                <p className="eyebrow" style={{ color: 'var(--ft-lime)' }}>Progress insight</p>
                 <h3 id="analysis-modal-title" style={{ fontSize: '18px', color: 'var(--ft-t1)', margin: '4px 0 0' }}>
-                  Progress Trajectory & Recommendations
+                  Your progress and next steps
                 </h3>
               </div>
               <button onClick={() => setIsAnalysisOpen(false)} className="btn-ghost" style={{ padding: '6px' }} aria-label="Close analysis">
@@ -658,13 +676,13 @@ export default function ProgressPage() {
               {analyzing ? (
                 <div style={{ padding: '48px 0', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
                   <Loader2 style={{ width: '20px', height: '20px', color: 'var(--ft-lime)', animation: 'spin 1s linear infinite' }} />
-                  <p style={{ fontSize: '13px', color: 'var(--ft-t2)' }}>Computing velocity and linear regression trajectory...</p>
+                  <p style={{ fontSize: '13px', color: 'var(--ft-t2)' }}>Reviewing your check-ins...</p>
                 </div>
               ) : analysisResult ? (
                 <>
                   {/* Summary Card */}
                   <div style={{ padding: '16px', background: 'var(--ft-surface)', border: '1px solid var(--ft-rule)', borderLeft: '3px solid var(--ft-lime)' }}>
-                    <p className="eyebrow" style={{ marginBottom: '6px' }}>Executive Trajectory Summary</p>
+                    <p className="eyebrow" style={{ marginBottom: '6px' }}>What your check-ins show</p>
                     <p style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--ft-t1)', margin: 0 }}>
                       {analysisResult.summary}
                     </p>

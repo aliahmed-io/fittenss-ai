@@ -1,5 +1,6 @@
 'use client';
 
+import { useDialogFocus } from '@/lib/hooks/useDialogFocus';
 import React from 'react';
 import { X, Download, Printer, ShieldCheck } from 'lucide-react';
 import type { AnthropometricMetrics } from '@/lib/bodyModel/anthropometry';
@@ -22,6 +23,8 @@ export default function BiometricReportModal({
   goal,
   targets,
 }: BiometricReportModalProps) {
+  const dialogRef = useDialogFocus(isOpen, onClose);
+
   if (!isOpen) return null;
 
   const timestamp = new Date().toISOString();
@@ -87,6 +90,7 @@ export default function BiometricReportModal({
         justifyContent: 'center',
         padding: '24px',
       }}
+      ref={dialogRef as React.RefObject<HTMLDivElement>}
       role="dialog"
       aria-modal="true"
       aria-labelledby="report-modal-title"

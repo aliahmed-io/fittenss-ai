@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useRef, useState, useMemo } from 'react';
+import { useDialogFocus } from '@/lib/hooks/useDialogFocus';
 import { Input } from '@/components/ui/input';
 import {
   Camera,
@@ -20,7 +21,7 @@ import {
 import type { MealScanResult } from '@/app/api/analyze-meal/route';
 import { downscaleImage } from '@/lib/image/downscale';
 import { useFitnessStore, fitnessActions } from '@/lib/store/fitnessStore';
-import { computeTargets, hydrationTargetMl, toDateKey } from '@/lib/fitness/engine';
+import { buildMealPlan, computeTargets, hydrationTargetMl, toDateKey } from '@/lib/fitness/engine';
 import type { CoachResponse, PlannedMeal } from '@/lib/fitness/types';
 
 function NutritionRow({
@@ -92,6 +93,10 @@ export default function NutritionPage() {
   const [generatingPlan, setGeneratingPlan] = useState(false);
   const [plannedMeals, setPlannedMeals] = useState<PlannedMeal[] | null>(null);
   const [planLogged, setPlanLogged] = useState(false);
+  const [planSource, setPlanSource] = useState('');
+  const [mealError, setMealError] = useState('');
+  const scanController = useRef<AbortController | null>(null);
+  const photoVersion = useRef(0);
 
   const totals = todayMeals.reduce(
     (acc, m) => ({
@@ -111,8 +116,10 @@ export default function NutritionPage() {
   };
 
   const addMeal = () => {
-    if (newMeal.name && newMeal.calories) {
-      fitnessActions.addMeals([newMeal]);
+    if (!newMeal.name.trim() || !Number.isFinite(newMeal.calories) || newMeal.calories <= 0 || newMeal.calories > 8000 || [newMeal.protein, newMeal.carbs, newMeal.fat].some(v => !Number.isFinite(v) || v < 0 || v > 1000)) { setMealError('Add a meal name and valid calories. Nutrition values must be positive.'); return; }
+    setMealError('');
+    if (newMeal.name.trim() && newMeal.calories) {
+      fitnessActions.addMeals([{ ...newMeal, name: newMeal.name.trim(), macrosKnown: [newMeal.protein, newMeal.carbs, newMeal.fat].some(v => v > 0) }]);
       setNewMeal({ name: '', calories: 0, protein: 0, carbs: 0, fat: 0 });
       setShowAddForm(false);
     }
@@ -122,6 +129,10 @@ export default function NutritionPage() {
 
   // Scan handlers with downscaling
   const handleFileSelect = useCallback(async (file: File) => {
+    scanController.current?.abort();
+    setScanning(false);
+    const version = ++photoVersion.current;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 15 * 1024 * 1024) { setScanError('Choose a JPEG, PNG, or WEBP photo smaller than 15 MB.'); return; }
     setScanResult(null);
     setScanError(null);
     setSelected(new Set());
@@ -131,9 +142,11 @@ export default function NutritionPage() {
       if (typeof raw === 'string') {
         try {
           const downscaled = await downscaleImage(raw, 1280, 0.85);
+          if (version !== photoVersion.current) return;
           setPreview(`data:image/jpeg;base64,${downscaled.base64}`);
           setPreviewMime('image/jpeg');
         } catch {
+          if (version !== photoVersion.current) return;
           setPreview(raw);
           setPreviewMime(file.type || 'image/jpeg');
         }
@@ -153,23 +166,29 @@ export default function NutritionPage() {
 
   const analyze = async () => {
     if (!preview) return;
+    scanController.current?.abort();
+    const controller = new AbortController();
+    scanController.current = controller;
     setScanning(true);
     setScanError(null);
     try {
       const base64 = preview.split(',')[1] ?? '';
       const res = await fetch('/api/analyze-meal', {
+        signal: controller.signal,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: base64, mimeType: previewMime }),
       });
       const data = (await res.json()) as MealScanResult & { error?: string };
       if (!res.ok || data.error) throw new Error(data.error ?? 'Analysis failed');
+      if (controller.signal.aborted) return;
       setScanResult(data);
       setSelected(new Set(data.foods.map((_, i) => i)));
     } catch (err) {
+      if (controller.signal.aborted) return;
       setScanError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
-      setScanning(false);
+      if (!controller.signal.aborted) setScanning(false);
     }
   };
 
@@ -198,6 +217,8 @@ export default function NutritionPage() {
   };
 
   const closeScan = () => {
+    photoVersion.current++;
+    scanController.current?.abort();
     setScanOpen(false);
     setPreview(null);
     setScanResult(null);
@@ -205,6 +226,8 @@ export default function NutritionPage() {
     setScanning(false);
     setSelected(new Set());
   };
+
+  const scanDialogRef = useDialogFocus(scanOpen, closeScan);
 
   // AI Meal Plan Synthesis
   const handleGenerateMealPlan = async () => {
@@ -224,21 +247,25 @@ export default function NutritionPage() {
           streak: 0,
         }),
       });
+      if (!res.ok) throw new Error('Meal plan service unavailable');
       if (res.ok) {
         const data = (await res.json()) as CoachResponse;
+        if (!data.meals?.length) throw new Error('No meals returned');
+        setPlanSource(data.provenance.source === 'gemini' ? 'Created with AI. Review portions before logging.' : 'Created by the built-in planner. AI is currently unavailable.');
         if (data.meals) {
           setPlannedMeals(data.meals);
         }
       }
     } catch {
-      // Fallback
+      setPlannedMeals(buildMealPlan(targets));
+      setPlanSource('Created by the built-in planner. AI is currently unavailable.');
     } finally {
       setGeneratingPlan(false);
     }
   };
 
   const handleLogEntirePlan = () => {
-    if (!plannedMeals) return;
+    if (!plannedMeals || planLogged) return;
     const items = plannedMeals.map((m) => ({
       name: `${m.slot}: ${m.name}`,
       calories: m.calories,
@@ -273,7 +300,7 @@ export default function NutritionPage() {
       >
         <div>
           <p className="eyebrow" style={{ marginBottom: '12px' }}>Daily Nutrition Tracking</p>
-          <h1 className="d-lg" style={{ color: 'var(--ft-t1)' }}>Nutrition & Macros</h1>
+          <h1 className="d-lg" style={{ color: 'var(--ft-t1)' }}>Eat well, one meal at a time.</h1>
           <p style={{ fontSize: '14px', color: 'var(--ft-t2)', marginTop: '8px' }}>
             {todayMeals.length} meals logged today · Targets calibrated to {profile.weightKg} kg {profile.gender}
           </p>
@@ -292,14 +319,14 @@ export default function NutritionPage() {
             className="btn-ghost"
             style={{ padding: '12px 20px' }}
           >
-            {showAddForm ? 'Cancel' : '+ Manual'}
+            {showAddForm ? 'Cancel' : 'Add manually'}
           </button>
         </div>
       </section>
 
       {/* ── Macro Stats ── */}
       <section
-        className="anim-up d-50"
+        className="anim-up d-50 ft-responsive-stats"
         style={{ borderBottom: '1px solid var(--ft-rule)', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)' }}
         aria-label="Daily macro totals"
       >
@@ -318,6 +345,7 @@ export default function NutritionPage() {
         </div>
       </section>
 
+      {todayMeals.some(m => m.macrosKnown === false) && <p role="status" className="ft-feedback" style={{ padding: '0 40px' }}>Some meals include calories only. Macro totals reflect the values you have logged.</p>}
       {/* ── Hydration Strip ── */}
       <section
         className="anim-up d-75"
@@ -336,7 +364,7 @@ export default function NutritionPage() {
           <Droplets style={{ width: '18px', height: '18px', color: '#00F0FF' }} />
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span className="eyebrow" style={{ color: '#00F0FF' }}>Hydration Protocol</span>
+              <span className="eyebrow" style={{ color: '#00F0FF' }}>Water today</span>
               <span style={{ fontSize: '10px', color: 'var(--ft-t3)' }}>
                 Target: {waterTarget} ml (35 ml / kg)
               </span>
@@ -362,21 +390,15 @@ export default function NutritionPage() {
             className="btn-ghost"
             style={{ padding: '6px 12px', fontSize: '10px' }}
           >
-            +250 ml
-          </button>
-          <button
-            onClick={() => fitnessActions.addWater(500)}
-            className="btn-lime"
-            style={{ padding: '6px 14px', fontSize: '10px' }}
-          >
-            +500 ml
+            Add a glass · 250 ml
           </button>
           {currentWater > 0 && (
             <button
               onClick={() => fitnessActions.addWater(-250)}
               className="btn-ghost"
               style={{ padding: '6px 8px', fontSize: '10px' }}
-              title="Undo 250ml"
+              title="Remove 250 ml"
+              aria-label="Remove 250 ml"
             >
               <Minus style={{ width: '10px', height: '10px' }} />
             </button>
@@ -385,7 +407,7 @@ export default function NutritionPage() {
       </section>
 
       {/* ── Main Grid ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', borderBottom: '1px solid var(--ft-rule)' }}>
+      <div className="ft-nutrition-layout" style={{ display: 'grid', gridTemplateColumns: '1fr 360px', borderBottom: '1px solid var(--ft-rule)' }}>
         {/* Meal Log */}
         <div style={{ borderRight: '1px solid var(--ft-rule)' }}>
           <div style={{ padding: '0 40px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--ft-rule)' }}>
@@ -395,14 +417,14 @@ export default function NutritionPage() {
 
           {todayMeals.length === 0 && (
             <div style={{ padding: '48px 40px', textAlign: 'center' }}>
-              <p style={{ color: 'var(--ft-t3)', fontSize: '13px' }}>No meals logged today yet. Use Scan Meal or + Manual.</p>
+              <p style={{ color: 'var(--ft-t3)', fontSize: '13px' }}>No meals logged today yet. Use Scan Meal or Add manually.</p>
             </div>
           )}
 
           {todayMeals.map((meal) => (
             <div
               key={meal.id}
-              className="anim-up"
+              className="anim-up ft-meal-log-row"
               style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '0 40px', height: '72px', borderBottom: '1px solid var(--ft-rule)', transition: 'background 0.12s ease' }}
               onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)')}
               onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = 'transparent')}
@@ -414,7 +436,7 @@ export default function NutritionPage() {
                 <p style={{ fontSize: '14px', color: 'var(--ft-t1)', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meal.name}</p>
               </div>
               <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexShrink: 0 }}>
-                {[{ l: 'kcal', v: meal.calories, lime: true }, { l: 'P', v: `${meal.protein}g`, lime: false }, { l: 'C', v: `${meal.carbs}g`, lime: false }, { l: 'F', v: `${meal.fat}g`, lime: false }].map((item) => (
+                {meal.macrosKnown === false ? <span style={{ fontSize: 12, color: 'var(--ft-t2)' }}>{meal.calories} kcal · Macros not logged</span> : [{ l: 'kcal', v: meal.calories, lime: true }, { l: 'P', v: `${meal.protein}g`, lime: false }, { l: 'C', v: `${meal.carbs}g`, lime: false }, { l: 'F', v: `${meal.fat}g`, lime: false }].map((item) => (
                   <span key={item.l} className="data-val" style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <span style={{ color: 'var(--ft-t3)', fontSize: '10px' }}>{item.l}</span>
                     <span style={{ color: item.lime ? 'var(--ft-lime)' : 'var(--ft-t2)' }}>{item.v}</span>
@@ -433,17 +455,7 @@ export default function NutritionPage() {
             </div>
           ))}
 
-          {/* Total row */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '16px 40px', background: 'var(--ft-surface)' }}>
-            <span className="eyebrow" style={{ flex: 1 }}>Total</span>
-            {[{ l: 'kcal', v: totals.calories, lime: true }, { l: 'P', v: `${totals.protein}g`, lime: false }, { l: 'C', v: `${totals.carbs}g`, lime: false }, { l: 'F', v: `${totals.fat}g`, lime: false }].map((item) => (
-              <span key={item.l} className="data-val" style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', marginRight: '12px' }}>
-                <span style={{ color: 'var(--ft-t3)', fontSize: '10px' }}>{item.l}</span>
-                <span style={{ color: item.lime ? 'var(--ft-lime)' : 'var(--ft-t1)', fontWeight: 600 }}>{item.v}</span>
-              </span>
-            ))}
-            <span style={{ width: '22px' }} />
-          </div>
+
         </div>
 
         {/* Right: Form or Remaining */}
@@ -456,14 +468,18 @@ export default function NutritionPage() {
                   <label htmlFor="meal-name" style={{ display: 'block', fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '6px' }}>Meal Name</label>
                   <Input id="meal-name" value={newMeal.name} onChange={(e) => setNewMeal({ ...newMeal, name: e.target.value })} placeholder="Grilled Chicken Salad" />
                 </div>
+                <div><label htmlFor="meal-calories">Calories</label><Input id="meal-calories" type="number" min={1} max={8000} value={newMeal.calories || ''} onChange={e => setNewMeal({ ...newMeal, calories: Number(e.target.value) })} /></div>
+                <details className="ft-disclosure ft-inline-details"><summary>Add protein, carbs, and fat (optional)</summary>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  {[{ label: 'Calories', key: 'calories' as const }, { label: 'Protein (g)', key: 'protein' as const }, { label: 'Carbs (g)', key: 'carbs' as const }, { label: 'Fat (g)', key: 'fat' as const }].map((field) => (
+                  {[{ label: 'Protein (g)', key: 'protein' as const }, { label: 'Carbs (g)', key: 'carbs' as const }, { label: 'Fat (g)', key: 'fat' as const }].map((field) => (
                     <div key={field.key}>
                       <label htmlFor={`f-${field.key}`} style={{ display: 'block', fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ft-t3)', marginBottom: '6px' }}>{field.label}</label>
                       <Input id={`f-${field.key}`} type="number" value={(newMeal[field.key] as number) || ''} onChange={(e) => setNewMeal({ ...newMeal, [field.key]: Number(e.target.value) })} />
                     </div>
                   ))}
                 </div>
+                </details>
+                {mealError && <p className="ft-feedback ft-error" role="alert">{mealError}</p>}
                 <button onClick={addMeal} className="btn-lime" style={{ padding: '12px 20px', justifyContent: 'center', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Plus style={{ width: '14px', height: '14px' }} /> Add Meal
                 </button>
@@ -499,10 +515,10 @@ export default function NutritionPage() {
       <section className="anim-up d-200" style={{ padding: '40px', borderBottom: '1px solid var(--ft-rule)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '32px', flexWrap: 'wrap' }}>
           <div>
-            <p className="eyebrow" style={{ marginBottom: '12px' }}>AI-Powered Synthesis</p>
-            <h2 className="d-md" style={{ marginBottom: '8px' }}>Generate Precision Meal Plan</h2>
+            <p className="eyebrow" style={{ marginBottom: '12px' }}>Meal planning</p>
+            <h2 className="d-md" style={{ marginBottom: '8px' }}>A meal plan for your day</h2>
             <p style={{ fontSize: '13px', color: 'var(--ft-t2)', maxWidth: '520px' }}>
-              Formulates an exact 4-slot macronutrient meal plan (Breakfast, Lunch, Snack, Dinner) calibrated to your {profile.weightKg} kg profile and {goal.type} objective.
+              Suggests four meals (Breakfast, Lunch, Snack, Dinner) calibrated to your {profile.weightKg} kg profile and {goal.type} objective.
             </p>
           </div>
           <button
@@ -522,7 +538,7 @@ export default function NutritionPage() {
             {generatingPlan ? (
               <>
                 <Loader2 style={{ width: '14px', height: '14px', animation: 'spin 1s linear infinite' }} />
-                <span>Formulating Plan...</span>
+                <span>Creating your plan...</span>
               </>
             ) : (
               <>
@@ -534,13 +550,14 @@ export default function NutritionPage() {
           </button>
         </div>
 
+        {planSource && <p role="status" className="ft-feedback">{planSource}</p>}
         {/* Display Generated Plan */}
         {plannedMeals && (
           <div className="anim-in" style={{ marginTop: '32px', background: 'var(--ft-surface)', border: '1px solid var(--ft-rule)', padding: '24px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
               <div>
-                <p className="eyebrow" style={{ color: 'var(--ft-lime)' }}>Synthesized Plan · 4 Meal Slots</p>
-                <h3 style={{ fontSize: '16px', color: 'var(--ft-t1)', margin: '4px 0 0' }}>Daily Caloric Distribution</h3>
+                <p className="eyebrow" style={{ color: 'var(--ft-lime)' }}>Suggested meals</p>
+                <h3 style={{ fontSize: '16px', color: 'var(--ft-t1)', margin: '4px 0 0' }}>Your daily plan</h3>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
@@ -550,12 +567,12 @@ export default function NutritionPage() {
                   style={{ padding: '8px 18px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
                   <Check style={{ width: '13px', height: '13px' }} />
-                  {planLogged ? 'Plan Logged to Today!' : 'Log Entire Plan'}
+                  {planLogged ? 'Plan Logged to Today!' : 'Log all meals'}
                 </button>
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+            <div className="ft-meal-plan-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
               {plannedMeals.map((meal) => (
                 <div key={meal.slot} className="card-ft" style={{ padding: '16px' }}>
                   <span className="eyebrow" style={{ color: 'var(--ft-lime)' }}>{meal.slot}</span>
@@ -587,6 +604,7 @@ export default function NutritionPage() {
 
           {/* Drawer */}
           <aside
+            ref={scanDialogRef}
             className="anim-in"
             role="dialog"
             aria-modal="true"
@@ -637,14 +655,14 @@ export default function NutritionPage() {
                   role="button"
                   tabIndex={0}
                   aria-label="Upload meal photo"
-                  onKeyDown={(e) => e.key === 'Enter' && fileRef.current?.click()}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileRef.current?.click(); } }}
                 >
                   <div style={{ width: '48px', height: '48px', border: '1px solid var(--ft-rule-strong)', borderRadius: '2px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Camera style={{ width: '20px', height: '20px', color: 'var(--ft-t3)' }} />
                   </div>
                   <div style={{ textAlign: 'center' }}>
                     <p style={{ fontSize: '13px', color: 'var(--ft-t1)', marginBottom: '4px' }}>Drop a photo or click to upload</p>
-                    <p style={{ fontSize: '11px', color: 'var(--ft-t3)' }}>JPEG · PNG · WEBP (Auto-optimized to 1280px)</p>
+                    <p style={{ fontSize: '11px', color: 'var(--ft-t3)' }}>JPEG, PNG, or WEBP · up to 15 MB</p>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
                     <span className="btn-lime" style={{ padding: '8px 16px', fontSize: '11px', pointerEvents: 'none' }}>
@@ -674,7 +692,7 @@ export default function NutritionPage() {
               <input
                 ref={fileRef}
                 type="file"
-                accept="image/*"
+                accept="image/jpeg,image/png,image/webp"
                 capture="environment"
                 style={{ display: 'none' }}
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); e.target.value = ''; }}
@@ -691,7 +709,7 @@ export default function NutritionPage() {
                   {scanning ? (
                     <>
                       <Loader2 style={{ width: '14px', height: '14px', animation: 'spin 1s linear infinite' }} />
-                      Analyzing Meal Composition...
+                      Looking at your meal...
                     </>
                   ) : (
                     <>
@@ -716,7 +734,7 @@ export default function NutritionPage() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <ShieldCheck style={{ width: '13px', height: '13px', color: 'var(--ft-lime)' }} />
                     <span style={{ fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ft-t2)' }}>
-                      {scanResult.provenance?.source === 'gemini' ? 'Gemini 2.0 Flash' : 'Deterministic Engine'} · {scanResult.confidence}
+                      {scanResult.provenance?.source === 'gemini' ? 'AI estimate' : 'Scan unavailable'} · {scanResult.confidence}
                     </span>
                   </div>
                   <p className="eyebrow">{scanResult.foods.length} items detected</p>
@@ -725,7 +743,7 @@ export default function NutritionPage() {
                 <div style={{ flex: 1, overflowY: 'auto' }}>
                   {scanResult.foods.length === 0 ? (
                     <div style={{ padding: '48px 28px', textAlign: 'center' }}>
-                      <p style={{ color: 'var(--ft-t3)', fontSize: '13px' }}>{scanResult.note ?? 'No food items detected.'}</p>
+                      <p style={{ color: 'var(--ft-t3)', fontSize: '13px' }}>{scanResult.note ?? 'No food items detected.'}</p><button className="btn-lime" style={{ marginTop: 16, padding: '10px 16px' }} onClick={() => { closeScan(); setShowAddForm(true); }}>Add meal manually</button>
                     </div>
                   ) : (
                     <>

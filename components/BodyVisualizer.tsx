@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useMemo, Suspense } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Environment, ContactShadows } from '@react-three/drei';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { OrbitControls, Environment, Lightformer, ContactShadows } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
 import { generateMuscleHeatmapColors, MuscleFatigueState, WORKOUT_STRAIN_PRESETS } from '@/lib/bodyModel/muscleHeatmap';
@@ -12,22 +12,23 @@ import {
   type BodyModelConfig,
   type ProcessedModelResult,
 } from '@/lib/bodyModel/glbModelLoader';
-import { createDynamicBodyMaterial, updateDynamicBodyMaterial } from '@/lib/bodyModel/dynamicPbrShader';
-import { PoseController } from '@/lib/bodyModel/poseSystem';
+import { LimbController } from '@/lib/bodyModel/limbController';
+import { buildMassGeometry } from '@/lib/bodyModel/bodyMass';
+import { fitBodyCamera } from '@/lib/bodyModel/cameraFraming';
 import { computeLimbRatios } from '@/lib/bodyModel/limbScaling';
 
 export type CameraViewPreset = 'full' | 'torso' | 'lower' | 'profile' | 'back';
-export type MaterialMode = 'hologram' | 'pbr' | 'sculpt' | 'athletic' | 'wireframe' | 'heatmap';
+export type MaterialMode = 'sculpt' | 'heatmap';
 
 export interface BodyVisualizerProps {
   gender?: 'male' | 'female';
   morphValues: Record<string, number>;
+  weightKg: number;
   materialMode?: MaterialMode;
   cameraView?: CameraViewPreset;
   showWireframe?: boolean;
   bodyFat?: number;
   muscleFatigue?: MuscleFatigueState;
-  activePose?: string;
 }
 
 const CAMERA_POSITIONS: Record<CameraViewPreset, { pos: [number, number, number]; target: [number, number, number] }> = {
@@ -38,14 +39,21 @@ const CAMERA_POSITIONS: Record<CameraViewPreset, { pos: [number, number, number]
   back:    { pos: [0, 1.10, -3.45], target: [0, 1.10, 0] },
 };
 
-function CameraController({ view }: { view: CameraViewPreset }) {
+function CameraController({ view, height }: { view: CameraViewPreset; height: number }) {
+  const size = useThree(state => state.size);
   const controlsRef = useRef<OrbitControlsImpl>(null);
-  const target = CAMERA_POSITIONS[view] ?? CAMERA_POSITIONS.full;
+  const target = useMemo(() => {
+    if (view === 'full' || view === 'profile') return fitBodyCamera(height, size.width, size.height, view);
+    return CAMERA_POSITIONS[view];
+  }, [view, height, size.width, size.height]);
   const isTransitioningRef = useRef(false);
 
   useEffect(() => {
     isTransitioningRef.current = true;
-  }, [view]);
+    const resetView = () => { isTransitioningRef.current = true; };
+    window.addEventListener('visualizer:view', resetView);
+    return () => window.removeEventListener('visualizer:view', resetView);
+  }, [view, target]);
 
   useEffect(() => {
     const controls = controlsRef.current;
@@ -73,6 +81,7 @@ function CameraController({ view }: { view: CameraViewPreset }) {
     const handleZoom = (e: Event) => {
       const customEvt = e as CustomEvent<{ delta: number }>;
       const delta = customEvt.detail?.delta ?? 0;
+      isTransitioningRef.current = false;
       const controls = controlsRef.current;
       if (!controls) return;
 
@@ -152,9 +161,9 @@ function CameraController({ view }: { view: CameraViewPreset }) {
   );
 }
 
-function ScannerPedestal({ isHologram = false }: { isHologram?: boolean }) {
+function ScannerPedestal() {
   const ringRef = useRef<THREE.Group>(null);
-  const accentColor = isHologram ? '#00F0FF' : '#CBFF00';
+  const accentColor = '#CBFF00';
 
   useFrame((_, delta) => {
     if (ringRef.current) {
@@ -199,28 +208,27 @@ function BodyMesh({
   processedModel,
   config,
   morphValues,
+  weightKg,
   materialMode,
   showWireframe,
   bodyFat = 15,
   muscleFatigue,
-  activePose = 'neutral',
 }: {
   processedModel: ProcessedModelResult;
   config: BodyModelConfig;
   morphValues: Record<string, number>;
+  weightKg: number;
   materialMode: MaterialMode;
   showWireframe: boolean;
   bodyFat?: number;
   muscleFatigue?: MuscleFatigueState;
-  activePose?: string;
 }) {
-  const targetInfluencesRef = useRef<number[]>([]);
   const meshRef = useRef<THREE.SkinnedMesh | null>(null);
   const isFemale = config.character.includes('female');
-  const baseHeight = isFemale ? 1.631 : 1.702;
+  const baseHeight = useMemo(() => { const position = processedModel.geometry.getAttribute('position'); let height = 0; for (let i = 0; i < position.count; i++) height = Math.max(height, position.getY(i)); return height; }, [processedModel]);
 
-  // Pose Controller for procedural animations
-  const poseController = useMemo(() => new PoseController(), []);
+  // Neutral skeleton controller retains limb-length adjustments.
+  const limbController = useMemo(() => new LimbController(), []);
   const sceneRef = useRef<THREE.Group | null>(null);
 
   const limbRatios = useMemo(
@@ -229,29 +237,19 @@ function BodyMesh({
   );
 
   useEffect(() => {
-    poseController.setLimbRatios(limbRatios.arm, limbRatios.lowerLeg);
-  }, [poseController, limbRatios]);
+    limbController.setLimbRatios(limbRatios.arm, limbRatios.lowerLeg);
+  }, [limbController, limbRatios]);
 
   useEffect(() => {
     meshRef.current = processedModel.skinnedMesh ?? null;
     sceneRef.current = processedModel.scene ?? null;
     if (processedModel.skeleton) {
-      poseController.setSkeleton(processedModel.skeleton);
+      limbController.setSkeleton(processedModel.skeleton);
     }
-  }, [processedModel, poseController]);
-
-  useEffect(() => {
-    poseController.setPose(activePose);
-  }, [activePose, poseController]);
+  }, [processedModel, limbController]);
 
   // Primary material setup
   const primaryMaterial = useMemo(() => {
-    if (materialMode === 'pbr' || materialMode === 'hologram') {
-      const mat = createDynamicBodyMaterial({ isHologram: materialMode === 'hologram' });
-      mat.wireframe = showWireframe;
-      return mat;
-    }
-
     if (materialMode === 'heatmap') {
       return new THREE.MeshStandardMaterial({
         vertexColors: true,
@@ -261,31 +259,15 @@ function BodyMesh({
       });
     }
 
-    if (materialMode === 'sculpt') {
-      return new THREE.MeshStandardMaterial({
+    return new THREE.MeshStandardMaterial({
         color: '#D8D4CC',
         roughness: 0.54,
         metalness: 0.02,
         wireframe: showWireframe,
       });
-    }
-
-    if (materialMode === 'athletic') {
-      return new THREE.MeshStandardMaterial({
-        color: '#151515',
-        roughness: 0.32,
-        metalness: 0.70,
-        wireframe: showWireframe,
-      });
-    }
-
-    return new THREE.MeshStandardMaterial({
-      color: '#121212',
-      roughness: 0.5,
-      metalness: 0.2,
-      wireframe: true,
-    });
   }, [materialMode, showWireframe]);
+
+  useEffect(() => () => primaryMaterial.dispose(), [primaryMaterial]);
 
   // Assign material to SkinnedMesh
   useEffect(() => {
@@ -294,75 +276,37 @@ function BodyMesh({
     }
   }, [primaryMaterial, processedModel]);
 
-  // Heatmap vertex colors update
+  const renderGeometry = useMemo(() => {
+    const mesh = processedModel.skinnedMesh;
+    if (!mesh) return null;
+    const influences = computeGLBMorphInfluences(isFemale ? 'female' : 'male', processedModel.morphMap, morphValues, bodyFat, weightKg);
+    return buildMassGeometry(mesh, processedModel.geometry, influences, { gender: isFemale ? 'female' : 'male', weightKg, heightCm: morphValues.Height ?? (isFemale ? 165 : 178), bodyFatPct: bodyFat });
+  }, [processedModel, isFemale, morphValues, bodyFat, weightKg]);
+
   useEffect(() => {
-    const mesh = meshRef.current;
-    if (mesh && materialMode === 'heatmap') {
-      const geom = mesh.geometry;
-      const positions = geom.attributes['position']?.array as Float32Array | undefined;
-      const count = geom.attributes['position']?.count ?? 0;
-      if (positions && count > 0) {
-        const activeFatigue = muscleFatigue ?? WORKOUT_STRAIN_PRESETS[0]!.fatigue;
-        const colors = generateMuscleHeatmapColors(positions, count, baseHeight, activeFatigue, true);
-        geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-      }
-    }
-  }, [materialMode, muscleFatigue, baseHeight, processedModel]);
+    const mesh = processedModel.skinnedMesh;
+    if (!mesh || !renderGeometry) return;
+    mesh.geometry = renderGeometry;
+    mesh.morphTargetInfluences = [];
+    mesh.morphTargetDictionary = {};
+    return () => { renderGeometry.dispose(); };
+  }, [processedModel, renderGeometry]);
 
-  // Calculate target morph influences
   useEffect(() => {
-    const morphMap = processedModel.morphMap;
-    if (morphMap.has('Muscle') || morphMap.has('Waist_Cinch')) {
-      const influences = computeGLBMorphInfluences(
-        isFemale ? 'female' : 'male',
-        morphMap,
-        morphValues,
-        bodyFat
-      );
-      targetInfluencesRef.current = influences;
-    }
-  }, [isFemale, processedModel, morphValues, bodyFat]);
+    if (!renderGeometry || materialMode !== 'heatmap') return;
+    const positions = renderGeometry.getAttribute('position');
+    renderGeometry.setAttribute('color', new THREE.BufferAttribute(generateMuscleHeatmapColors(positions.array as Float32Array, positions.count, baseHeight, muscleFatigue ?? WORKOUT_STRAIN_PRESETS[0]!.fatigue, true), 3));
+  }, [renderGeometry, materialMode, muscleFatigue, baseHeight]);
 
-  // Smooth frame updates: poses, morphs, shader uniforms
-  useFrame((_, delta) => {
-    poseController.update(delta);
-    if (sceneRef.current) {
-      sceneRef.current.position.y = poseController.getGroundOffset();
-    }
-
-    const activeMesh = meshRef.current;
-    if (activeMesh?.morphTargetInfluences) {
-      const targets = targetInfluencesRef.current;
-      for (let i = 0; i < targets.length; i++) {
-        const targetVal = targets[i];
-        if (targetVal !== undefined && activeMesh.morphTargetInfluences[i] !== undefined) {
-          activeMesh.morphTargetInfluences[i] = THREE.MathUtils.damp(
-            activeMesh.morphTargetInfluences[i]!,
-            targetVal,
-            10,
-            delta
-          );
-        }
-      }
-    }
-
-    if (activeMesh) {
-      const currentMat = activeMesh.material as THREE.Material;
-      if (materialMode === 'pbr' || materialMode === 'hologram') {
-        updateDynamicBodyMaterial(currentMat, {
-          bodyFat,
-          muscle: morphValues['Muscle'] ?? 50,
-          isHologram: materialMode === 'hologram',
-          deltaTime: delta,
-        });
-      }
-    }
+  useFrame(() => {
+    limbController.update();
+    if (sceneRef.current) sceneRef.current.position.y = limbController.getGroundOffset();
   });
 
   const targetHeightCm = morphValues['Height'] ?? (isFemale ? 165 : 178);
-  const baseHeightCm = isFemale ? 163.1 : 170.2;
-  const heightScaleY = THREE.MathUtils.clamp(targetHeightCm / baseHeightCm, 0.75, 1.35);
-  const scaleXZ = Math.sqrt(heightScaleY);
+  const baseHeightCm = baseHeight * 100;
+  const heightScaleY = THREE.MathUtils.clamp(targetHeightCm / baseHeightCm, 0.5, 1.6);
+  const scaleXZ = heightScaleY;
 
   if (processedModel.scene) {
     return (
@@ -376,14 +320,14 @@ function BodyMesh({
 }
 
 export default function BodyVisualizer({
-  gender = 'female',
+  gender = 'male',
   morphValues,
-  materialMode = 'hologram',
+  weightKg,
+  materialMode = 'sculpt',
   cameraView = 'full',
   showWireframe = false,
   bodyFat = 15,
   muscleFatigue,
-  activePose = 'neutral',
 }: BodyVisualizerProps) {
   const [config, setConfig] = useState<BodyModelConfig | null>(null);
   const [processedModel, setProcessedModel] = useState<ProcessedModelResult | null>(null);
@@ -479,6 +423,7 @@ export default function BodyVisualizer({
       )}
 
       <Canvas
+        style={{ position: 'absolute', inset: 0 }}
         camera={{ position: CAMERA_POSITIONS.full.pos, fov: 36, near: 0.1, far: 50 }}
         gl={{
           antialias: true,
@@ -486,36 +431,38 @@ export default function BodyVisualizer({
           toneMappingExposure: 1.15,
           powerPreference: 'high-performance',
         }}
+        dpr={[1, 1.5]}
+        fallback={<div role="status" style={{ padding: 32 }}>3D requires WebGL. Your fitness tracking remains available.</div>}
         shadows
       >
         <Suspense fallback={null}>
-          <CameraController view={cameraView} />
+          <CameraController view={cameraView} height={(morphValues.Height ?? (gender === 'male' ? 178 : 165)) / 100} />
 
-          <ambientLight intensity={materialMode === 'hologram' ? 0.35 : 0.85} />
+          <ambientLight intensity={0.85} />
           <directionalLight
             position={[2, 4, 3]}
-            intensity={materialMode === 'hologram' ? 0.6 : 1.4}
+            intensity={1.4}
             castShadow
             shadow-mapSize={[1024, 1024]}
           />
           <directionalLight
             position={[-3, 2, -2]}
-            intensity={materialMode === 'hologram' ? 0.4 : 0.8}
+            intensity={0.8}
             color="#00F0FF"
           />
 
-          <ScannerPedestal isHologram={materialMode === 'hologram'} />
+          <ScannerPedestal />
 
           {processedModel && config && (
             <BodyMesh
               processedModel={processedModel}
               config={config}
               morphValues={morphValues}
+              weightKg={weightKg}
               materialMode={materialMode}
               showWireframe={showWireframe}
               bodyFat={bodyFat}
               muscleFatigue={muscleFatigue}
-              activePose={activePose}
             />
           )}
 
@@ -528,7 +475,11 @@ export default function BodyVisualizer({
             color="#000000"
           />
 
-          <Environment preset="city" environmentIntensity={materialMode === 'hologram' ? 0.25 : 0.75} />
+          <Environment resolution={128} environmentIntensity={0.65}>
+            <Lightformer position={[3, 3, 2]} intensity={3} scale={[3, 5, 1]} />
+            <Lightformer position={[-3, 2, 1]} intensity={2} color="#c4deee" scale={[2, 4, 1]} />
+            <Lightformer position={[0, 3, -3]} intensity={4} scale={[3, 3, 1]} />
+          </Environment>
         </Suspense>
       </Canvas>
     </div>

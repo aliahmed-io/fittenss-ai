@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three-stdlib';
+import { softenPectoralSurface } from './pectoralSurface';
 
 export interface BodyModelConfig {
   baseUrl: string;
@@ -52,6 +53,7 @@ export async function loadGlbHumanModel(
   }
 
   const geometry = targetMesh.geometry;
+  if (gender === 'male') softenPectoralSurface(geometry);
   const morphMap = new Map<string, number>();
   const dict = targetMesh.morphTargetDictionary ?? {};
   Object.entries(dict).forEach(([name, idx]) => {
@@ -101,14 +103,15 @@ export function computeGLBMorphInfluences(
   gender: 'female' | 'male' | 'child',
   morphMap: Map<string, number>,
   morphValues: Record<string, number>,
-  bodyFat: number = 15
+  bodyFat: number = 15,
+  weightKg?: number
 ): number[] {
-  const influences: number[] = new Array(morphMap.size).fill(0);
+  const influences: number[] = new Array(Math.max(-1, ...morphMap.values()) + 1).fill(0);
   const isMale = gender === 'male';
 
   const setInfluence = (name: string, val: number, damping: number = 0.85) => {
     const idx = morphMap.get(name);
-    if (idx !== undefined) {
+    if (idx !== undefined && Number.isFinite(val)) {
       influences[idx] = THREE.MathUtils.clamp(val * damping, 0, 1);
     }
   };
@@ -123,41 +126,41 @@ export function computeGLBMorphInfluences(
     reduceKey: string,
     damping: number = 0.85
   ): number => {
-    if (val === undefined) return 0;
+    if (val === undefined || !Number.isFinite(val)) return 0;
     if (val >= base) {
       const denom = Math.max(0.001, max - base);
-      const ratio = (val - base) / denom;
+      const ratio = THREE.MathUtils.clamp((val - base) / denom, 0, 1);
       setInfluence(expandKey, ratio, damping);
       setInfluence(reduceKey, 0);
       return ratio;
     } else {
       const denom = Math.max(0.001, base - min);
-      const ratio = (base - val) / denom;
+      const ratio = THREE.MathUtils.clamp((base - val) / denom, 0, 1);
       setInfluence(reduceKey, ratio, damping);
       setInfluence(expandKey, 0);
       return -ratio;
     }
   };
 
-  // 1. Overall Muscularity & Hypertrophy
-  if (morphValues['Muscle'] !== undefined) {
-    setInfluence('Muscle', morphValues['Muscle'] / 100, 0.90);
+  // Whole-body mass uses separate lean and fat shape targets, as character
+  // creators do. Kilograms are normalized for stature before choosing shapes.
+  if (weightKg !== undefined) {
+    const heightRatio = (morphValues.Height ?? (isMale ? 178 : 165)) / (isMale ? 178 : 165);
+    const normalizedMass = weightKg / Math.pow(heightRatio, 3);
+    const referenceMass = isMale ? 78 : 62;
+    const referenceFat = isMale ? .15 : .22;
+    const fatFraction = THREE.MathUtils.clamp(bodyFat / 100, .03, .6);
+    const fatRatio = normalizedMass * fatFraction / (referenceMass * referenceFat);
+    const leanRatio = normalizedMass * (1-fatFraction) / (referenceMass * (1-referenceFat));
+    setInfluence('Weight_More', Math.max(0, fatRatio-1) / 2, .85);
+    setInfluence('Weight_Less', Math.max(0, 1-fatRatio), .65);
+    const detail = ((morphValues.Muscle ?? 50)-50) / 100;
+    setInfluence('Muscle', Math.max(0, leanRatio-1) + .18 + detail, .65);
   } else {
-    // Athletic baseline
-    const muscleScore = isMale
-      ? THREE.MathUtils.clamp((22 - bodyFat) / 14, 0, 1)
-      : THREE.MathUtils.clamp((28 - bodyFat) / 16, 0, 1);
-    setInfluence('Muscle', muscleScore * 0.40, 0.90);
-  }
-
-  // 2. Body Fat (Weight_More & Weight_Less)
-  const neutralFat = isMale ? 15 : 22;
-  if (bodyFat >= neutralFat) {
-    setInfluence('Weight_More', (bodyFat - neutralFat) / 18, 0.80);
-    setInfluence('Weight_Less', 0);
-  } else {
-    setInfluence('Weight_Less', (neutralFat - bodyFat) / 11, 0.80);
-    setInfluence('Weight_More', 0);
+    setInfluence('Muscle', (morphValues.Muscle ?? 20) / 100, .9);
+    const neutralFat = isMale ? 15 : 22;
+    setInfluence('Weight_More', Math.max(0, bodyFat-neutralFat) / 18, .8);
+    setInfluence('Weight_Less', Math.max(0, neutralFat-bodyFat) / 11, .8);
   }
 
   // 3. Waistline
@@ -172,52 +175,29 @@ export function computeGLBMorphInfluences(
     0.80
   );
 
-  // 4. Chest / Pectorals
-  const chestVal = isMale
-    ? (morphValues['Chest'] ?? morphValues['Breast'])
-    : (morphValues['Breast'] ?? morphValues['Chest']);
-  const neutralChest = isMale ? 98 : 88;
-  const chestRatio = mapBidirectional(
-    chestVal,
-    neutralChest,
-    78,
-    125,
-    'Chest_Expand',
-    'Chest_Reduce',
-    0.85
-  );
+  // Pectoral targets change muscle tissue, so breast volume must not drive them.
+  const chestRatio = isMale
+    ? mapBidirectional(morphValues['Chest'], 98, 80, 130, 'Chest_Expand', 'Chest_Reduce', 0.65)
+    : 0;
 
-  // Ribcage & Underbust cross-coupling with chest
-  if (chestRatio > 0) {
-    setInfluence('Ribcage_Expand', chestRatio * 0.45, 0.80);
-    setInfluence('Ribcage_Reduce', 0);
-  } else {
-    setInfluence('Ribcage_Reduce', Math.abs(chestRatio) * 0.40, 0.80);
-    setInfluence('Ribcage_Expand', 0);
-  }
-
-  // Female Bust volume
+  // The female mesh already has a baked bust. Apply one modest cup-volume
+  // correction instead of stacking pectoral, ribcage, and breast reductions.
   if (!isMale) {
-    const breastVal = morphValues['Breast'];
-    if (breastVal !== undefined) {
-      mapBidirectional(breastVal, 85, 65, 110, 'Bust_Expand', 'Bust_Reduce', 0.85);
-    }
+    mapBidirectional(morphValues['Breast'], 85, 70, 100, 'Bust_Expand', 'Bust_Reduce', 0.55);
   }
 
-  // 5. Bust Girth / Ribcage
-  const bustGirthVal = morphValues['Bust Girth'];
-  if (bustGirthVal !== undefined) {
-    const neutralBust = isMale ? 86 : 68;
-    mapBidirectional(
-      bustGirthVal,
-      neutralBust,
-      68,
-      112,
-      'Bust_Girth_Expand',
-      'Bust_Girth_Reduce',
-      0.75
-    );
-  }
+  // Girth controls the torso independently. Match both sides of each UI range;
+  // the former female minimum equalled its baseline, saturating any reduction.
+  const girthRatio = mapBidirectional(
+    morphValues['Bust Girth'],
+    isMale ? 86 : 66,
+    isMale ? 78 : 56,
+    isMale ? 98 : 76,
+    'Bust_Girth_Expand',
+    'Bust_Girth_Reduce',
+    isMale ? 0.5 : 0.3
+  );
+  setInfluence(girthRatio >= 0 ? 'Ribcage_Expand' : 'Ribcage_Reduce', Math.abs(girthRatio), 0.2);
 
   // 6. Shoulders & Deltoid Caps
   const neutralShoulder = isMale ? 14.2 : 13.8;

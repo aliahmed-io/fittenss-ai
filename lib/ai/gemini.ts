@@ -5,11 +5,11 @@ import {
   type Part,
 } from '@google/generative-ai';
 
-export const GEMINI_MODEL = 'gemini-2.0-flash';
+export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 const REQUEST_TIMEOUT_MS = 25_000;
 
 export function hasGeminiKey(): boolean {
-  return Boolean(process.env.GEMINI_API_KEY);
+  return Boolean(process.env.GEMINI_API_KEY?.trim() && !process.env.GEMINI_API_KEY.includes('your_gemini_api_key'));
 }
 
 /**
@@ -22,9 +22,10 @@ export async function generateJson<T>(
   validate: (value: unknown) => value is T,
   temperature = 0.2
 ): Promise<T | null> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || !hasGeminiKey()) return null;
 
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
       model: GEMINI_MODEL,
@@ -40,14 +41,16 @@ export async function generateJson<T>(
     const result = await Promise.race([
       model.generateContent(parts),
       new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Gemini request timed out')), REQUEST_TIMEOUT_MS);
+        timeout = setTimeout(() => reject(new Error('Gemini request timed out')), REQUEST_TIMEOUT_MS);
       }),
     ]);
 
     const parsed: unknown = JSON.parse(result.response.text());
     return validate(parsed) ? parsed : null;
-  } catch (err) {
-    console.error('[gemini]', err instanceof Error ? err.message : 'unknown error');
+  } catch {
+    console.error('[gemini] Request failed; returning the labelled fallback.');
     return null;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }

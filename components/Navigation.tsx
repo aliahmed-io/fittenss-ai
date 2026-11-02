@@ -9,6 +9,7 @@ const navLinks = [
   { href: '/workouts', label: 'Workouts' },
   { href: '/nutrition', label: 'Nutrition' },
   { href: '/progress', label: 'Progress' },
+  { href: '/today', label: 'My day' },
 ];
 
 export function Navigation() {
@@ -63,6 +64,7 @@ export function Navigation() {
             return (
               <Link
                 key={link.href}
+                aria-current={isActive ? 'page' : undefined}
                 href={link.href}
                 style={{
                   display: 'flex',
@@ -87,6 +89,7 @@ export function Navigation() {
         {/* CTA */}
         <Link
           href="/?scan=1"
+          onClick={event => { if (pathname === '/') { event.preventDefault(); window.dispatchEvent(new CustomEvent('fitness:open-scan')); } }}
           className="btn-lime"
           style={{ padding: '8px 16px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}
         >

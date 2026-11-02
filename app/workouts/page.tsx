@@ -7,7 +7,7 @@ import { WORKOUT_LIBRARY } from '@/lib/fitness/workoutLibrary';
 import { useFitnessStore, fitnessActions } from '@/lib/store/fitnessStore';
 import WorkoutSessionModal from '@/components/workout/WorkoutSessionModal';
 import type { WorkoutPlan, WorkoutLog, CoachResponse } from '@/lib/fitness/types';
-import { computeTargets } from '@/lib/fitness/engine';
+import { computeTargets, buildWorkoutPlan } from '@/lib/fitness/engine';
 
 const diffLabel: Record<WorkoutPlan['difficulty'], { dot: string; text: string }> = {
   Beginner: { dot: 'var(--ft-lime)', text: 'Beginner' },
@@ -24,6 +24,7 @@ export default function WorkoutsPage() {
   const [filter, setFilter] = useState<string>('All');
   const [sessionPlan, setSessionPlan] = useState<WorkoutPlan | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [planMessage, setPlanMessage] = useState('');
   const [lastFinishedLog, setLastFinishedLog] = useState<WorkoutLog | null>(null);
 
   // Combine curated library + custom AI plans
@@ -54,8 +55,11 @@ export default function WorkoutsPage() {
         }),
       });
 
+      if (!res.ok) throw new Error('Plan service unavailable');
       if (res.ok) {
         const data = (await res.json()) as CoachResponse;
+        if (!data.plan) throw new Error('No plan returned');
+        setPlanMessage(data.provenance.source === 'gemini' ? 'Your AI workout is ready. Review the exercises below.' : 'Your workout is ready from the built-in planner. AI is currently unavailable.');
         if (data.plan) {
           fitnessActions.addCustomPlan(data.plan);
           setSelected(data.plan);
@@ -63,7 +67,11 @@ export default function WorkoutsPage() {
         }
       }
     } catch {
-      // Fallback
+      const plan = buildWorkoutPlan(profile, goal, `local-${Date.now()}`);
+      fitnessActions.addCustomPlan(plan);
+      setSelected(plan);
+      setFilter('Custom');
+      setPlanMessage('Your workout is ready from the built-in planner. AI is currently unavailable.');
     } finally {
       setIsGenerating(false);
     }
@@ -140,16 +148,16 @@ export default function WorkoutsPage() {
             Workout Plans
           </h1>
           <p style={{ fontSize: '14px', color: 'var(--ft-t2)', marginTop: '8px' }}>
-            {allPlans.length} plans available · {customPlans.length} custom plans tailored to your silhouette
+            {allPlans.length} plans available · {customPlans.length} personal plans based on your goals
           </p>
         </div>
 
         {/* Stats */}
-        <div style={{ display: 'flex', gap: '32px', paddingBottom: '4px' }}>
+        <div className="ft-workout-summary" style={{ display: 'flex', gap: '32px', paddingBottom: '4px' }}>
           {[
             { label: 'Available Plans', value: String(allPlans.length) },
             { label: 'Logged Sessions', value: String(workoutLogs.length) },
-            { label: 'Avg Duration', value: '38 MIN' },
+            { label: 'Avg Duration', value: workoutLogs.length ? `${Math.round(workoutLogs.reduce((sum, log) => sum + log.durationSec, 0) / workoutLogs.length / 60)} MIN` : '—' },
           ].map((s, i) => (
             <div key={s.label} style={{ textAlign: 'right' }}>
               <p
@@ -164,6 +172,7 @@ export default function WorkoutsPage() {
         </div>
       </section>
 
+      {planMessage && <p role="status" className="ft-feedback" style={{ padding: '12px 40px' }}>{planMessage}</p>}
       {/* ── Filter ── */}
       <section
         className="anim-up d-50"
@@ -175,32 +184,7 @@ export default function WorkoutsPage() {
           overflowX: 'auto',
         }}
       >
-        {filters.map((f) => {
-          const isActive = filter === f;
-          return (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              style={{
-                padding: '14px 24px',
-                fontSize: '10px',
-                fontWeight: 500,
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                background: 'transparent',
-                border: 'none',
-                borderBottom: isActive ? '2px solid var(--ft-lime)' : '2px solid transparent',
-                color: isActive ? 'var(--ft-t1)' : 'var(--ft-t3)',
-                cursor: 'pointer',
-                transition: 'color 0.15s ease, border-color 0.15s ease',
-                marginBottom: '-1px',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {f} {f === 'Custom' && customPlans.length > 0 && `(${customPlans.length})`}
-            </button>
-          );
-        })}
+        <label className="ft-workout-filter">Show workouts<select value={filter} onChange={e => setFilter(e.target.value)} aria-label="Filter workouts">{filters.map(f => <option value={f} key={f}>{f === 'All' ? 'All levels' : f === 'Custom' ? 'My plans' : f}</option>)}</select></label>
       </section>
 
       {/* ── Workout List ── */}
@@ -214,6 +198,7 @@ export default function WorkoutsPage() {
             <div key={workout.id}>
               {/* Row */}
               <button
+                className="ft-workout-row"
                 onClick={() => setSelected(isSelected ? null : workout)}
                 style={{
                   width: '100%',
@@ -376,7 +361,7 @@ export default function WorkoutsPage() {
 
                   {/* Details + CTA */}
                   <div>
-                    <p className="eyebrow" style={{ marginBottom: '16px' }}>Session Parameters</p>
+                    <p className="eyebrow" style={{ marginBottom: '16px' }}>Session details</p>
                     {[
                       { label: 'Duration', value: `${workout.durationMin} MIN` },
                       { label: 'Difficulty', value: workout.difficulty },
@@ -414,7 +399,7 @@ export default function WorkoutsPage() {
                         gap: '6px',
                       }}
                     >
-                      <span>Start Interactive Workout</span>
+                      <span>Start workout</span>
                       <ArrowUpRight style={{ width: '13px', height: '13px' }} />
                     </button>
                   </div>
@@ -438,7 +423,7 @@ export default function WorkoutsPage() {
         }}
       >
         <div>
-          <p className="eyebrow" style={{ marginBottom: '12px' }}>AI-Powered Synthesis</p>
+          <p className="eyebrow" style={{ marginBottom: '12px' }}>Personal workout</p>
           <h2 className="d-md" style={{ color: 'var(--ft-t1)', marginBottom: '8px' }}>
             Generate Custom Plan
           </h2>
@@ -463,7 +448,7 @@ export default function WorkoutsPage() {
           {isGenerating ? (
             <>
               <Loader2 style={{ width: '14px', height: '14px', animation: 'spin 1s linear infinite' }} />
-              <span>Synthesizing Plan...</span>
+              <span>Creating your workout...</span>
             </>
           ) : (
             <>

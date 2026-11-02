@@ -17,6 +17,7 @@ import type {
 export const STORAGE_KEY = 'fittransform_state_v2';
 
 export interface FitnessState {
+  dailyCheckins?: Record<string, { sleepHours: number; energy: number; soreness: number; steps: number; notes: string }>;
   profile: Profile;
   goal: GoalSettings;
   customPlans: WorkoutPlan[];
@@ -46,7 +47,7 @@ export function createDefaultProfile(gender: Gender): Profile {
 }
 
 function createDefaultState(): FitnessState {
-  const profile = createDefaultProfile('female');
+  const profile = createDefaultProfile('male');
   return {
     profile,
     goal: defaultGoal(profile, 'weight-loss'),
@@ -140,7 +141,7 @@ export function sanitizeState(raw: unknown): FitnessState {
   if (!isRecord(raw)) return base;
 
   const rawProfile = isRecord(raw.profile) ? raw.profile : {};
-  const gender: Gender = rawProfile.gender === 'male' ? 'male' : 'female';
+  const gender: Gender = rawProfile.gender === 'female' ? 'female' : 'male';
   const defaults = createDefaultProfile(gender);
   const profile: Profile = {
     gender,
@@ -179,6 +180,10 @@ export function sanitizeState(raw: unknown): FitnessState {
   }
 
   return {
+    dailyCheckins: isRecord(raw.dailyCheckins) ? Object.fromEntries(Object.entries(raw.dailyCheckins).filter(([, v]) => isRecord(v)).map(([k, v]) => {
+      const item = v as Record<string, unknown>;
+      return [k, { sleepHours: num(item.sleepHours, 0, 0, 24), energy: num(item.energy, 3, 1, 5), soreness: num(item.soreness, 1, 1, 5), steps: num(item.steps, 0, 0, 100000), notes: typeof item.notes === 'string' ? item.notes.slice(0, 1000) : '' }];
+    })) : {},
     profile,
     goal,
     customPlans: arrayOf(raw.customPlans, isPlan),
@@ -266,6 +271,15 @@ export function useFitnessStore(): FitnessState {
 }
 
 export const fitnessActions = {
+  setCurrentWeight(weightKg: number): void {
+    if (!Number.isFinite(weightKg) || weightKg < 30 || weightKg > 250) return;
+    const profile = { ...state.profile, weightKg: round1(weightKg) };
+    profile.morphValues = { ...profile.morphValues, ...generateSmartMeasurements(profile.gender, profile.heightCm, profile.weightKg, profile.bodyFatPct) };
+    update({ ...state, profile });
+  },
+  saveDailyCheckin(date: string, entry: NonNullable<FitnessState['dailyCheckins']>[string]): void {
+    update({ ...state, dailyCheckins: { ...state.dailyCheckins, [date]: entry } });
+  },
   setProfile(patch: Partial<Omit<Profile, 'gender'>>): void {
     update({ ...state, profile: { ...state.profile, ...patch } });
   },
@@ -332,8 +346,10 @@ export const fitnessActions = {
     update({ ...state, customPlans: state.customPlans.filter((p) => p.id !== id) });
   },
 
-  addProgressEntry(entry: Omit<ProgressEntry, 'id'>): void {
-    update({ ...state, progressEntries: [...state.progressEntries, { ...entry, id: newId('entry') }] });
+  addProgressEntry(entry: Omit<ProgressEntry, 'id'>): ProgressEntry {
+    const saved = { ...entry, id: newId('entry') };
+    update({ ...state, progressEntries: [...state.progressEntries, saved] });
+    return saved;
   },
 
   removeProgressEntry(id: string): void {

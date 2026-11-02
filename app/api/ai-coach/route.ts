@@ -74,7 +74,9 @@ ${contextBlock(req)}
 Return ONLY JSON: {"meals": array of 4 objects {"slot": string, "name": string, "description": string (max 160 chars), "calories": number, "protein": number, "carbs": number, "fat": number}}.`;
   const raw = await generateJson(parts(prompt), isRecord, 0.5);
   const meals = raw ? normalizeMealPlan(raw) : null;
-  if (meals) return { provenance: GEMINI_PROVENANCE, meals };
+  // Reject incomplete plans or totals far from the requested daily target.
+  const mealCalories = meals?.reduce((sum, meal) => sum + meal.calories, 0) ?? 0;
+  if (meals?.length === 4 && Math.abs(mealCalories - req.targets.calories) <= req.targets.calories * 0.2) return { provenance: GEMINI_PROVENANCE, meals };
   return { provenance: FALLBACK_PROVENANCE, meals: buildMealPlan(req.targets) };
 }
 

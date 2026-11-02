@@ -123,8 +123,8 @@ export function generateSmartMeasurements(
   weightKg: number,
   bodyFatPct: number
 ): Record<string, number> {
-  const h = Math.max(120, Math.min(210, heightCm));
-  const w = Math.max(35, Math.min(150, weightKg));
+  const h = Math.max(100, Math.min(250, heightCm));
+  const w = Math.max(30, Math.min(250, weightKg));
   const bf = Math.max(8, Math.min(50, bodyFatPct));
 
   // Height scaling ratio relative to the gender-specific baseline stature

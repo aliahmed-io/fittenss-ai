@@ -69,6 +69,8 @@ export interface WorkoutLog {
 }
 
 export interface Meal {
+  /** False when only calories were supplied in a manual entry. */
+  macrosKnown?: boolean;
   id: string;
   name: string;
   calories: number;

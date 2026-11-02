@@ -1,5 +1,6 @@
 'use client';
 
+import { useDialogFocus } from '@/lib/hooks/useDialogFocus';
 import React, { useState, useRef, useCallback } from 'react';
 import { X, Upload, Check, Camera, Sparkles, RefreshCw, Loader2, ShieldCheck } from 'lucide-react';
 import { Gender } from '@/lib/bodyModel/anthropometry';
@@ -320,6 +321,8 @@ export default function PhotoScanModal({
     onClose();
   };
 
+  const dialogRef = useDialogFocus(isOpen, onClose);
+
   if (!isOpen) return null;
 
   return (
@@ -335,6 +338,7 @@ export default function PhotoScanModal({
         justifyContent: 'center',
         padding: '24px',
       }}
+      ref={dialogRef as React.RefObject<HTMLDivElement>}
       role="dialog"
       aria-modal="true"
       aria-labelledby="photo-scan-title"
@@ -649,7 +653,7 @@ export default function PhotoScanModal({
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <ShieldCheck style={{ width: '11px', height: '11px', color: 'var(--ft-lime)' }} />
                     <span style={{ fontSize: '9px', color: 'var(--ft-t3)', textTransform: 'uppercase' }}>
-                      {aiResult.provenance?.source === 'gemini' ? 'Gemini 2.0 Flash' : 'Engine Fallback'} · {aiResult.confidence}
+                      {aiResult.provenance?.source === 'gemini' ? 'AI coach' : 'Manual estimate'} · {aiResult.confidence}
                     </span>
                   </div>
                 </div>

@@ -1,5 +1,6 @@
 'use client';
 
+import { useDialogFocus } from '@/lib/hooks/useDialogFocus';
 import React, { useState, useEffect } from 'react';
 import { X, Play, Pause, CheckCircle2, Flame, Trophy, ArrowRight } from 'lucide-react';
 import type { WorkoutPlan, WorkoutLog } from '@/lib/fitness/types';
@@ -46,6 +47,8 @@ export default function WorkoutSessionModal({
     return () => clearInterval(interval);
   }, [restRemaining]);
 
+  const dialogRef = useDialogFocus(isOpen, onClose);
+
   if (!isOpen) return null;
 
   // Format mm:ss
@@ -60,26 +63,22 @@ export default function WorkoutSessionModal({
 
   const toggleSet = (exIdx: number, setIdx: number, restSec: number) => {
     const key = `${exIdx}-${setIdx}`;
-    setCompletedSets((prev) => {
+    const wasCompleted = completedSets.has(key);
+    setCompletedSets(prev => {
       const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-        // Start rest countdown for this exercise rest period
-        const restDuration = restSec > 0 ? restSec : 60;
-        setRestRemaining(restDuration);
-      }
+      if (wasCompleted) next.delete(key); else next.add(key);
       return next;
     });
+    if (!wasCompleted) setRestRemaining(restSec > 0 ? restSec : 60);
   };
 
   const handleComplete = () => {
+    if (completedSets.size === 0) return;
     const log = fitnessActions.completeWorkout({
       planId: plan.id,
       planName: plan.name,
       durationSec: elapsedSec,
-      calories: Math.round((plan.calories * Math.max(elapsedSec, 300)) / (plan.durationMin * 60)),
+      calories: Math.round((plan.calories * elapsedSec) / Math.max(plan.durationMin * 60, 1)),
       muscles: plan.muscles,
       setsCompleted: completedSets.size,
       setsTotal: totalSets,
@@ -100,6 +99,7 @@ export default function WorkoutSessionModal({
         justifyContent: 'center',
         padding: '24px',
       }}
+      ref={dialogRef as React.RefObject<HTMLDivElement>}
       role="dialog"
       aria-modal="true"
       aria-labelledby="session-title"
@@ -208,7 +208,7 @@ export default function WorkoutSessionModal({
         {/* Scrollable Exercise Checklist */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <p className="eyebrow">Exercise Protocol ({plan.exercises.length} Movements)</p>
+            <p className="eyebrow">Exercises ({plan.exercises.length} Movements)</p>
             <span className="data-val" style={{ fontSize: '11px', color: 'var(--ft-lime)' }}>
               {completedSets.size} / {totalSets} Sets Completed
             </span>
@@ -298,7 +298,7 @@ export default function WorkoutSessionModal({
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Trophy style={{ width: '14px', height: '14px', color: 'var(--ft-lime)' }} />
             <span style={{ fontSize: '11px', color: 'var(--ft-t3)' }}>
-              Completing updates your 3D strain heatmap and training streak
+              {completedSets.size === 0 ? 'Mark a set complete to save this session.' : 'Your progress will be saved when you finish.'}
             </span>
           </div>
 
@@ -308,6 +308,8 @@ export default function WorkoutSessionModal({
             </button>
             <button
               onClick={handleComplete}
+              disabled={completedSets.size === 0}
+              title={completedSets.size === 0 ? 'Complete at least one set to save your workout' : 'Save this workout'}
               className="btn-lime"
               style={{
                 padding: '10px 22px',

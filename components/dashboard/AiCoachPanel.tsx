@@ -40,7 +40,7 @@ export default function AiCoachPanel({
     {
       id: 'initial',
       sender: 'coach',
-      text: `Your current waist-to-hip ratio is ${metrics.whr.toFixed(2)}, classified as a ${metrics.archetype} silhouette. For your ${goal.type} goal, focus on structured compound movements while maintaining a daily caloric target of ${targets.calories} kcal with ${targets.protein}g protein.`,
+      text: `Your starting targets are ${targets.calories} kcal and ${targets.protein}g protein per day. Ask me about training, meals, or recovery`,
       source: 'engine-fallback',
       confidence: 'high',
     },
@@ -161,7 +161,7 @@ export default function AiCoachPanel({
                   textTransform: 'uppercase',
                 }}
               >
-                <span>Source: {m.source === 'gemini' ? 'Gemini 2.0 Flash' : 'Biomechanics Engine'}</span>
+                <span>Source: {m.source === 'gemini' ? 'AI coach' : 'Built-in coach'}</span>
                 {m.confidence && <span>· {m.confidence} confidence</span>}
               </div>
             )}
